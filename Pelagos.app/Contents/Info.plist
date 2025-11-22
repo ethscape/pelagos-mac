@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>Pelagos</string>
+    <key>CFBundleDisplayName</key>
+    <string>Pelagos</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.pelagos.daemon</string>
+    <key>CFBundleExecutable</key>
+    <string>Pelagos</string>
+    <key>CFBundleIconFile</key>
+    <string>icon</string>
+    <key>CFBundleIconFiles</key>
+    <array>
+        <string>icon</string>
+    </array>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.utilities</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1.0</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0</string>
+    <key>LSUIElement</key>
+    <true/>
+</dict>
+</plist>

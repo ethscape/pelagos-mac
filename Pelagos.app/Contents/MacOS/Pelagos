@@ -1,0 +1,16 @@
+#!/bin/bash
+# Pelagos app bundle launcher script
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APP_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
+PROJECT_DIR="$(cd "$APP_DIR/.." && pwd)"
+
+VENV_PYTHON="$PROJECT_DIR/venv/bin/python3"
+SCRIPT="$PROJECT_DIR/pelagos_daemon.py"
+
+if [ ! -x "$VENV_PYTHON" ]; then
+    echo "Pelagos: Python virtual environment not found at $VENV_PYTHON" >&2
+    exit 1
+fi
+
+exec "$VENV_PYTHON" "$SCRIPT"

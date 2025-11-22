@@ -1,0 +1,41 @@
+{
+    "sources": [],
+    "commonActions": [
+        {
+            "name": "Manga",
+            "type": "scp",
+            "target": "mahoro:/home/ethark/Manga",
+            "username": "ethark",
+            "privateKey": "/Users/ethark/.ssh/pelagos",
+            "keepOriginal": false,
+            "rename": "{{title}}.{{extension}}",
+            "overwriteRule": "rename",
+            "auto": false,
+            "filters": [
+                {
+                    "type": "regex",
+                    "pattern": "^.*\\.(cb.|zip|rar)$"
+                },
+                {
+                    "type": "noSource"
+                },
+                {
+                    "type": "hook",
+                    "name": "isMagazine"
+                }
+            ]
+        },
+        {
+            "name": "Dummy",
+            "type": "dummy",
+            "auto": false,
+            "extensions": ["dummy"]
+        },
+        {
+            "name": "Dummy2",
+            "type": "dummy",
+            "auto": false,
+            "extensions": ["dummy", "dummy2"]
+        }
+    ]
+}

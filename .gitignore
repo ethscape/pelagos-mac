@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# macOS
+.DS_Store
+._*
+
+# Pelagos specific
+*.dummy
+*.dummy2
+*.test
+Downloads/*.dummy
+Downloads/*.dummy2
+Downloads/*.test
+
+# Pelagos logs
+*.log
+
+# Pelagos build artifacts
+bin/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# General temp
+*.tmp
+*.temp
