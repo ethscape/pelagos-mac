@@ -529,7 +529,7 @@ def prompt_user_for_common_action(file_path: Path, config: Dict[str, Any], defau
         else:
             # User skipped the banner notification
             logger.info(f"User skipped banner notification for {file_path.name}")
-            return None
+            return {'_user_skipped': True}  # Special marker for intentional skip
 
 
 def execute_scp_action(file_path, action: Dict[str, Any]):

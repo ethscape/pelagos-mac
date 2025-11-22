@@ -24,7 +24,7 @@ def send_to_server(message, port=9999):
         return False
 
 def show_final_click_banner(title, subtitle, message, port=9999):
-    """Show banner notification and assume user clicks (based on confirmation)"""
+    """Show banner notification and wait for actual user click or timeout"""
     
     # Try to send SHOWN
     for attempt in range(3):
@@ -33,36 +33,72 @@ def show_final_click_banner(title, subtitle, message, port=9999):
         time.sleep(0.1)
     
     try:
-        # Show banner notification
+        # Show banner notification with -execute for reliable click detection
         cmd = [
             '/opt/homebrew/bin/terminal-notifier',
             '-title', title,
             '-subtitle', subtitle,
             '-message', f"{message} - Click this notification to EXECUTE",
             '-sound', 'default',
-            '-timeout', '10'  # Show for 10 seconds
+            '-sender', 'com.pelagos.daemon',
+            '-execute', 'echo "clicked" >/tmp/banner_clicked'
         ]
         
         print(f"Launching banner: {' '.join(cmd)}")
         
         # Start banner process
         process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        print("Banner shown, user will click it...")
+        print("Banner shown, waiting for user click or timeout...")
         
-        # Wait 4 seconds for user to click (based on their 2-5 second preference)
-        time.sleep(4)
+        # Wait for click file to appear or timeout
+        click_file = "/tmp/banner_clicked"
+        start_time = time.time()
+        timeout_seconds = 10
         
-        # User clicked it (they confirmed they always click)
-        print("User clicked banner - sending EXECUTE")
-        send_to_server("EXECUTE", port)
+        # Clean up any existing click file
+        try:
+            os.remove(click_file)
+        except:
+            pass
         
-        # Clean up banner process if still running
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                process.kill()
+        while time.time() - start_time < timeout_seconds:
+            if os.path.exists(click_file):
+                # User clicked the banner
+                print("User clicked banner - sending EXECUTE")
+                send_to_server("EXECUTE", port)
+                
+                # Clean up click file
+                try:
+                    os.remove(click_file)
+                except:
+                    pass
+                
+                # Wait for process to complete
+                try:
+                    process.wait(timeout=2)
+                except:
+                    pass
+                
+                return
+            
+            time.sleep(0.5)
+        
+        # Timeout reached - no click detected
+        print("Banner timed out without click - sending SKIP")
+        send_to_server("SKIP", port)
+        
+        # Clean up and kill process
+        try:
+            if os.path.exists(click_file):
+                os.remove(click_file)
+        except:
+            pass
+            
+        try:
+            process.kill()
+            process.wait(timeout=1)
+        except:
+            pass
             
     except Exception as e:
         print(f"Error showing final click banner: {e}")
