@@ -13,6 +13,7 @@ import sys
 import fnmatch
 import copy
 import re
+import traceback
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 from watchdog.observers import Observer
@@ -20,6 +21,7 @@ from watchdog.events import FileSystemEventHandler
 from urllib.parse import urlparse
 
 from hooks import registry
+from action_registry import get_registry
 
 # Configuration
 CONFIG_PATH = Path(__file__).parent / "config.json"
@@ -276,18 +278,48 @@ def confirm_action_execution(file_path: Path, action: Dict[str, Any]) -> Tuple[b
         logger.info(f"Action '{action_name}' already confirmed for {file_path.name}")
         return True, "already_confirmed"
     
-    # Try banner notification first
-    banner_result = _try_banner_notification(file_path, action)
-    if banner_result is not None:
-        return banner_result
+    # Try banner notification with action registry
+    action_hash = _try_banner_notification(file_path, action, 'single')
+    if action_hash:
+        # Wait for user response via port communication (only EXECUTE will trigger response)
+        logger.info("Waiting for user response via port communication")
+        response = notification_server.wait_for_response(timeout=30)
+        
+        if response:
+            # User clicked EXECUTE
+            logger.info(f"Received response: {response}")
+            parts = response.split(':', 1)
+            command = parts[0]
+            resp_hash = parts[1] if len(parts) > 1 else None
+            
+            # Registry already cleaned up by server when EXECUTE was received
+            # No need to remove again
+            
+            if command == "EXECUTE":
+                return True, "accepted"
+        else:
+            # Timeout - user didn't click (or clicked SKIP which doesn't send response)
+            logger.warning(f"User confirmation timed out for {file_path.name}")
+            
+            # Clean up registry
+            action_reg = get_registry()
+            action_reg.remove_action(action_hash)
+            
+            return False, "timeout"
 
-    # Fallback to AppleScript dialog
-    logger.info(f"Banner notification unavailable, using dialog for {file_path.name}")
-    return _confirm_via_dialog(file_path, action_name, message)
+    # Banner notification shown but no response received (user ignored)
+    logger.info(f"User ignored banner notification for {file_path.name}")
+    return False, "user_skip"
 
 
-def _try_banner_notification(file_path: Path, action: Dict[str, Any]) -> Optional[Tuple[bool, str]]:
-    """Try to show a banner notification using port communication."""
+def _try_banner_notification(file_path: Path, action: Dict[str, Any], action_type: str = 'single', 
+                             available_actions: Optional[list] = None) -> Optional[str]:
+    """
+    Try to show a banner notification using port communication with action registry.
+    
+    Returns:
+        action_hash if notification shown, None if failed
+    """
     logger.info("Attempting banner notification via port communication")
     
     # Start notification server if not already running
@@ -298,16 +330,27 @@ def _try_banner_notification(file_path: Path, action: Dict[str, Any]) -> Optiona
         notification_server.start()
         time.sleep(0.5)  # Give server time to start
     
+    # Register action in registry
+    action_reg = get_registry()
+    action_hash = action_reg.register_action(
+        file_path=file_path,
+        action=action,
+        action_type=action_type,
+        available_actions=available_actions
+    )
+    
+    logger.info(f"Registered action with hash: {action_hash}")
+    
     # Prepare notification arguments
     title = "Pelagos"
     subtitle = f"Confirm {action.get('display_name', action['name'])}"
     message = f"File: {file_path.name}"
     
-    # Launch pync banner notification (Python wrapper with better control)
+    # Launch pync banner notification with action hash
     logger.info(f"Launching pync banner notification (Python wrapper)")
     pync_banner = "/path/to/pelagos/pync_banner.py"
     process = subprocess.Popen(
-        [pync_banner, title, subtitle, message],
+        [pync_banner, title, subtitle, message, action_hash],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True
@@ -317,24 +360,8 @@ def _try_banner_notification(file_path: Path, action: Dict[str, Any]) -> Optiona
     time.sleep(1.0)
     logger.info("Notification client launched successfully")
     
-    # Wait for user response via port communication (up to 30 seconds)
-    logger.info("Waiting for user response via port communication")
-    response = notification_server.wait_for_response(timeout=30)
-    logger.info(f"Received response: {response}")
-    
-    # Don't stop notification server - keep it running for multiple requests
-    
-    if response == "EXECUTE":
-        return True, "accepted"
-    elif response == "SKIP":
-        return False, "user_skip"
-    elif response == "DIALOG":
-        return None  # Fall back to dialog
-    elif response == "TIMEOUT":
-        logger.warning(f"User confirmation timed out for {file_path.name}")
-        return False, "timeout"
-    else:
-        return None
+    # Return the action hash - response will be handled asynchronously
+    return action_hash
 
 
 def _confirm_via_dialog(file_path: Path, action_name: str, message: str) -> Tuple[bool, str]:
@@ -441,6 +468,34 @@ def prompt_user_for_common_action(file_path: Path, config: Dict[str, Any], defau
         logger.info(
             f"Single common action match '{name}' detected for {file_path.name}; using banner notification"
         )
+        
+        # Use banner notification with action registry
+        action_hash = _try_banner_notification(file_path, single_action, 'single')
+        if action_hash:
+            # Wait for response (only EXECUTE will trigger response)
+            response = notification_server.wait_for_response(timeout=30)
+            
+            if response:
+                # User clicked EXECUTE
+                parts = response.split(':', 1)
+                command = parts[0]
+                resp_hash = parts[1] if len(parts) > 1 else None
+                
+                # Registry already cleaned up by server when EXECUTE was received
+                
+                if command == "EXECUTE":
+                    action = copy.deepcopy(single_action)
+                    action['_manual_selection'] = True  # Mark as manually confirmed
+                    return action
+            else:
+                # Timeout - user didn't click
+                # Clean up registry
+                action_reg = get_registry()
+                action_reg.remove_action(action_hash)
+                
+                return {'_user_skipped': True}
+        
+        # Fallback: return action without confirmation
         return copy.deepcopy(single_action)
 
     # Multiple actions: show banner notification first, then dialog if clicked
@@ -458,10 +513,17 @@ def prompt_user_for_common_action(file_path: Path, config: Dict[str, Any], defau
         'target': f"{len(filtered_actions)} actions available"
     }
     
-    # Try banner notification
-    banner_result = _try_banner_notification(file_path, banner_action)
-    if banner_result is not None:
-        if banner_result[0]:  # User clicked EXECUTE
+    # Try banner notification with action registry
+    action_hash = _try_banner_notification(file_path, banner_action, 'multiple', available_actions=filtered_actions)
+    if action_hash:
+        # Wait for response (only EXECUTE will trigger response)
+        response = notification_server.wait_for_response(timeout=30)
+        
+        logger.info(f"Banner response received: {response}")
+        if response:  # User clicked EXECUTE
+            parts = response.split(':', 1)
+            command = parts[0]
+            resp_hash = parts[1] if len(parts) > 1 else None
             # Show dialog with action options
             action_list_str = ", ".join(f'"{_escape_applescript_string(name)}"' for name in action_name_map.keys())
             prompt_text = _escape_applescript_string(f"Pelagos detected '{file_path.name}'. Choose a common action or Skip.")
@@ -503,6 +565,9 @@ def prompt_user_for_common_action(file_path: Path, config: Dict[str, Any], defau
                     return None
 
                 selection = result.stdout.strip()
+                
+                # Registry already cleaned up by server when EXECUTE was received
+                
                 if not selection or selection == 'SKIP' or selection.lower() == 'false':
                     logger.info(f"User skipped common action for {file_path.name}")
                     return {'_user_skipped': True}  # Special marker for intentional skip
@@ -515,6 +580,7 @@ def prompt_user_for_common_action(file_path: Path, config: Dict[str, Any], defau
                 logger.info(f"User selected common action '{selection}' for {file_path.name}")
                 selected_action = copy.deepcopy(selected_action)
                 selected_action['_confirmed'] = True  # Mark as already confirmed
+                selected_action['_manual_selection'] = True  # Mark as manually confirmed
                 return selected_action
                 
             except FileNotFoundError:
@@ -527,8 +593,13 @@ def prompt_user_for_common_action(file_path: Path, config: Dict[str, Any], defau
                 logger.error(f"Failed to prompt for common action: {e}")
                 return None
         else:
-            # User skipped the banner notification
+            # User skipped the banner notification (timeout)
             logger.info(f"User skipped banner notification for {file_path.name}")
+            
+            # Clean up registry
+            action_reg = get_registry()
+            action_reg.remove_action(action_hash)
+            
             return {'_user_skipped': True}  # Special marker for intentional skip
 
 
@@ -591,7 +662,9 @@ def execute_scp_action(file_path, action: Dict[str, Any]):
 
 def process_file(file_path, config: Dict[str, Any]):
     """Process a file: check source and execute action"""
+    import traceback
     try:
+        logger.info(f"=== START PROCESSING FILE: {file_path} (CALLER: {traceback.format_stack()[-2].strip()}) ===")
         # Wait a bit to ensure file is fully written
         time.sleep(2)
         
@@ -654,6 +727,8 @@ def process_file(file_path, config: Dict[str, Any]):
             logger.warning(f"No executable action found for file {file_path}")
             return
 
+        logger.info(f"Action: {action}, manual_selection: {manual_selection}, is_auto: {is_action_auto(action) if action else 'N/A'}")
+
         if not is_action_auto(action) and not manual_selection:
             confirmed, reason = confirm_action_execution(path_obj, action)
             if not confirmed:
@@ -668,12 +743,21 @@ def process_file(file_path, config: Dict[str, Any]):
         if action_type == 'scp':
             execute_scp_action(file_path, action)
         elif action_type == 'dummy':
-            logger.info(f"Dummy action executed for {file_path.name} (no-op for testing)")
-        else:
-            logger.warning(f"Unknown action type: {action_type}")
+            action_name = action.get('name', 'Unknown')
+            logger.info(f"Dummy action '{action_name}' executed for {path_obj.name}")
+            try:
+                subprocess.run(['say', f"Executed {action_name} action"], check=True, capture_output=True)
+                logger.info(f"Spoke action name: {action_name}")
+            except Exception as e:
+                logger.warning(f"Failed to speak action name: {e}")
+        
+        logger.info(f"=== END PROCESSING FILE: {file_path} (SUCCESS) ===")
             
-    except Exception as e:
-        logger.error(f"Error processing file {file_path}: {e}")
+    except Exception as err:
+        logger.error(f"Error processing file {file_path}: {err}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        logger.info(f"=== END PROCESSING FILE: {file_path} (ERROR) ===")
+        return
 
 
 class DownloadsHandler(FileSystemEventHandler):
@@ -685,6 +769,16 @@ class DownloadsHandler(FileSystemEventHandler):
     
     def on_created(self, event):
         """Handle file creation events"""
+        self._handle_file_event(event)
+    
+    def on_modified(self, event):
+        """Handle file modification events"""
+        # Only process if it's a new file that hasn't been processed yet
+        # (some systems fire both created and modified for new files)
+        self._handle_file_event(event)
+    
+    def _handle_file_event(self, event):
+        """Common file event handling"""
         if event.is_directory:
             return
         
@@ -692,8 +786,10 @@ class DownloadsHandler(FileSystemEventHandler):
         
         # Avoid processing the same file multiple times
         if file_path in self.processed_files:
+            logger.info(f"Skipping already processed file: {file_path}")
             return
         
+        logger.info(f"Processing new file: {file_path} (event: {event.event_type})")
         self.processed_files.add(file_path)
         
         # Process the file

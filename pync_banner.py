@@ -42,66 +42,80 @@ def send_to_server(message, port=9999):
         print(f"Server communication failed: {e}")
         return False
 
-def show_pync_banner(title, subtitle, message, port=9999):
-    """Show banner notification using pync and wait for user click or timeout"""
+def show_pync_banner(title, subtitle, message, port=9999, action_hash=None):
+    """
+    Show banner notification using pync and wait for user click or timeout.
     
-    # Try to send SHOWN
+    Args:
+        title: Notification title
+        subtitle: Notification subtitle
+        message: Notification message
+        port: Server port for communication
+        action_hash: Hash key for the pending action (optional)
+    """
+    
+    # Try to send SHOWN with action hash
+    shown_msg = f"SHOWN:{action_hash}" if action_hash else "SHOWN"
     for attempt in range(3):
-        if send_to_server("SHOWN", port):
+        if send_to_server(shown_msg, port):
             break
         time.sleep(0.1)
     
     try:
-        # Clean up any existing click file
-        click_file = "/tmp/pync_banner_clicked"
-        try:
-            os.remove(click_file)
-        except:
-            pass
+        # Use a dedicated callback script for click detection
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        callback_script = os.path.join(script_dir, 'click_callback.py')
         
-        # Show notification with execute command
-        execute_cmd = f'echo "clicked" >{click_file}'
+        # Get the virtualenv Python to run the callback
+        venv_python = sys.executable
+        
+        # Include action hash in callback command
+        if action_hash:
+            execute_cmd = f'{venv_python} {callback_script} {port} {action_hash}'
+        else:
+            execute_cmd = f'{venv_python} {callback_script} {port}'
+        
+        # Show notification with execute command, sender for icon, and activate for clickability
         Notifier.notify(
             f"{message} - Click this notification to EXECUTE",
             title=title,
             subtitle=subtitle,
             sound='default',
             execute=execute_cmd,
-            appIcon='/path/to/pelagos/Pelagos.app/Contents/Resources/icon.icns'
+            # sender='com.pelagos.daemon',
+            # activate='com.apple.Terminal'  # Make notification clickable and activate Terminal
         )
         
-        print(f"Banner shown via pync, waiting for click or timeout...")
+        print(f"Banner shown via pync with Python callback (hash: {action_hash}), waiting for click or timeout...")
         
-        # Wait for click file to appear or timeout
+        # Wait for timeout - if user clicks, the callback will send EXECUTE:hash directly
         start_time = time.time()
         timeout_seconds = 10
         
         while time.time() - start_time < timeout_seconds:
-            if os.path.exists(click_file):
-                # User clicked the banner
-                print("User clicked banner - sending EXECUTE")
-                send_to_server("EXECUTE", port)
-                
-                # Clean up click file
-                try:
-                    os.remove(click_file)
-                except:
-                    pass
-                
-                return
-            
             time.sleep(0.5)
         
         # Timeout reached - no click detected
-        print("Banner timed out without click - sending SKIP")
-        send_to_server("SKIP", port)
-        
-        # Clean up click file
-        try:
-            if os.path.exists(click_file):
-                os.remove(click_file)
-        except:
-            pass
+        # Check if action still exists in registry before sending SKIP
+        if action_hash:
+            try:
+                from action_registry import get_registry
+                registry = get_registry()
+                action = registry.get_action(action_hash)
+                if action:
+                    print("Banner timed out without click - sending SKIP")
+                    skip_msg = f"SKIP:{action_hash}"
+                    send_to_server(skip_msg, port)
+                else:
+                    print(f"Action {action_hash} already processed - not sending SKIP")
+            except Exception as e:
+                print(f"Error checking registry: {e}")
+                print("Banner timed out - sending SKIP as fallback")
+                skip_msg = f"SKIP:{action_hash}"
+                send_to_server(skip_msg, port)
+        else:
+            print("Banner timed out without click - sending SKIP")
+            send_to_server("SKIP", port)
             
     except Exception as e:
         print(f"Error showing pync banner: {e}")
@@ -112,7 +126,7 @@ if __name__ == "__main__":
         title = sys.argv[1]
         subtitle = sys.argv[2]
         message = sys.argv[3]
-        
-        show_pync_banner(title, subtitle, message)
+        action_hash = sys.argv[4] if len(sys.argv) > 4 else None
+        show_pync_banner(title, subtitle, message, action_hash=action_hash)
     else:
-        print("Usage: pync_banner.py <title> <subtitle> <message>")
+        print("Usage: pync_banner.py <title> <subtitle> <message> [action_hash]")

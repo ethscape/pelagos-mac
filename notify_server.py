@@ -59,16 +59,49 @@ class NotificationServer:
                 
                 logging.info(f"Received: {data}")
                 
-                if data == "SHOWN":
+                # Parse message format: COMMAND or COMMAND:action_hash
+                parts = data.split(':', 1)
+                command = parts[0]
+                action_hash = parts[1] if len(parts) > 1 else None
+                
+                if command == "SHOWN":
                     # Notification was shown successfully
-                    logging.info("Banner notification was shown successfully")
+                    if action_hash:
+                        logging.info(f"Banner notification shown for action {action_hash}")
+                    else:
+                        logging.info("Banner notification was shown successfully")
                     
-                elif data in ["EXECUTE", "SKIP", "DIALOG", "TIMEOUT"]:
-                    # User response received
-                    self.current_response = data
+                elif command == "EXECUTE":
+                    # User clicked - store full message with hash
+                    self.current_response = data  # Store full "EXECUTE:hash" format
                     self.response_event.set()
-                    logging.info(f"User response received: {data}")
+                    if action_hash:
+                        logging.info(f"User response 'EXECUTE' for action {action_hash}")
+                        # Remove action from registry immediately to prevent later SKIP
+                        try:
+                            from action_registry import get_registry
+                            registry = get_registry()
+                            registry.remove_action(action_hash)
+                            logging.info(f"Removed action {action_hash} from registry after EXECUTE")
+                        except Exception as e:
+                            logging.warning(f"Failed to remove action {action_hash} from registry: {e}")
+                    else:
+                        logging.info(f"User response received: EXECUTE")
                     break
+                elif command == "SKIP":
+                    # Skip is just cleanup - don't set response event
+                    if action_hash:
+                        logging.info(f"User response 'SKIP' for action {action_hash}")
+                    else:
+                        logging.info(f"User response received: SKIP")
+                    # Don't break - continue processing other messages
+                elif command in ["DIALOG", "TIMEOUT"]:
+                    # These are handled by the daemon timeout logic
+                    if action_hash:
+                        logging.info(f"User response '{command}' for action {action_hash}")
+                    else:
+                        logging.info(f"User response received: {command}")
+                    # Don't set response event for these - daemon handles timeout
                     
                 # Send acknowledgment
                 client_socket.send(b"ACK")
@@ -89,7 +122,7 @@ class NotificationServer:
             self.current_response = None
             return response
         else:
-            return "TIMEOUT"
+            return None
     
     def stop(self):
         """Stop the server"""
