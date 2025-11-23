@@ -800,8 +800,38 @@ class DownloadsHandler(FileSystemEventHandler):
             self.processed_files.clear()
 
 
+def check_single_instance():
+    """Ensure only one daemon instance is running"""
+    import psutil
+    import sys
+    
+    current_pid = os.getpid()
+    current_script = os.path.abspath(__file__)
+    
+    try:
+        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+            try:
+                if proc.info['pid'] == current_pid:
+                    continue
+                    
+                cmdline = proc.info.get('cmdline', [])
+                if cmdline and any(current_script in str(arg) for arg in cmdline):
+                    logger.warning(f"Another daemon instance found (PID {proc.info['pid']}), stopping it")
+                    proc.terminate()
+                    proc.wait(timeout=5)
+                    logger.info(f"Stopped duplicate daemon instance (PID {proc.info['pid']})")
+            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                continue
+    except ImportError:
+        # Fallback if psutil not available
+        logger.warning("psutil not available, cannot check for duplicate instances")
+        return
+
 def main():
     """Main daemon loop"""
+    # Ensure single instance
+    check_single_instance()
+    
     logger.info("Starting Pelagos daemon")
     logger.info(f"Monitoring folder: {DOWNLOADS_FOLDER}")
     logger.info(f"Config file: {CONFIG_PATH}")

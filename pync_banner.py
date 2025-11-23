@@ -75,15 +75,12 @@ def show_pync_banner(title, subtitle, message, port=9999, action_hash=None):
         else:
             execute_cmd = f'{venv_python} {callback_script} {port}'
         
-        # Show notification with execute command, sender for icon, and activate for clickability
         Notifier.notify(
             f"{message} - Click this notification to EXECUTE",
             title=title,
             subtitle=subtitle,
             sound='default',
-            execute=execute_cmd,
-            # sender='com.pelagos.daemon',
-            # activate='com.apple.Terminal'  # Make notification clickable and activate Terminal
+            execute=execute_cmd
         )
         
         print(f"Banner shown via pync with Python callback (hash: {action_hash}), waiting for click or timeout...")
