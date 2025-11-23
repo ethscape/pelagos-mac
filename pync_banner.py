@@ -9,20 +9,20 @@ import subprocess
 import socket
 
 # Add the virtual environment to Python path
-venv_path = '/path/to/pelagos/venv/lib/python3.14/site-packages'
-if os.path.exists(venv_path):
-    sys.path.insert(0, venv_path)
-    print(f"Using venv path: {venv_path}")
+# pync_banner.py is in the project root, so the venv is in the same directory
+script_dir = os.path.dirname(os.path.abspath(__file__))
+project_dir = script_dir  # pync_banner.py is in the project root
+
+# Try to find the correct Python version first
+import glob
+venv_base = os.path.join(project_dir, 'venv', 'lib')
+possible_paths = glob.glob(os.path.join(venv_base, 'python*', 'site-packages'))
+if possible_paths:
+    sys.path.insert(0, possible_paths[0])
+    print(f"Using venv path: {possible_paths[0]}")
 else:
-    # Try to find the correct Python version
-    import glob
-    possible_paths = glob.glob('/path/to/pelagos/venv/lib/python*/site-packages')
-    if possible_paths:
-        sys.path.insert(0, possible_paths[0])
-        print(f"Using venv path: {possible_paths[0]}")
-    else:
-        print("ERROR: Virtual environment not found")
-        sys.exit(1)
+    print("ERROR: Virtual environment not found")
+    sys.exit(1)
 
 from pync import Notifier
 

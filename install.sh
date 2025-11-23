@@ -65,10 +65,13 @@ if [ -f "$INSTALLED_PLIST" ]; then
     launchctl unload "$INSTALLED_PLIST" 2>/dev/null || true
 fi
 
-# Copy plist file
+# Create dynamic plist with correct paths
 echo ""
 echo "📋 Installing daemon..."
-cp "$PLIST_FILE" "$INSTALLED_PLIST"
+# Replace hardcoded paths in plist
+sed -e "s|/path/to/pelagos|$SCRIPT_DIR|g" \
+    -e "s|/logs_folder|$HOME/Library/Logs|g" \
+    "$PLIST_FILE" > "$INSTALLED_PLIST"
 
 # Load the daemon
 echo ""

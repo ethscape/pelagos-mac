@@ -364,7 +364,8 @@ def _try_banner_notification(file_path: Path, action: Dict[str, Any], action_typ
     
     # Launch pync banner notification with action hash
     logger.info(f"Launching pync banner notification (Python wrapper)")
-    pync_banner = "/path/to/pelagos/pync_banner.py"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    pync_banner = os.path.join(script_dir, 'pync_banner.py')
     
     # Build command with optional content image
     cmd = [pync_banner, title, subtitle, message, action_hash]
