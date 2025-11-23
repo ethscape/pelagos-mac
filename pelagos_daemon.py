@@ -26,7 +26,7 @@ CONFIG_PATH = Path(__file__).parent / "config.json"
 DOWNLOADS_FOLDER = Path.home() / "Downloads"
 LOG_FILE = Path.home() / "Library/Logs/pelagos.log"
 DEFAULT_CONFIRM_TIMEOUT = 120
-# NOTIFY_APP_BUNDLE no longer needed - using terminal-notifier instead
+# Using pync Python wrapper for notifications
 
 # Global notification server for port communication
 notification_server = None
@@ -303,11 +303,11 @@ def _try_banner_notification(file_path: Path, action: Dict[str, Any]) -> Optiona
     subtitle = f"Confirm {action.get('display_name', action['name'])}"
     message = f"File: {file_path.name}"
     
-    # Launch final click banner notification (reliable click detection)
-    logger.info(f"Launching final click banner notification (reliable click detection)")
-    final_click_banner = "/path/to/pelagos/final_click_banner.py"
+    # Launch pync banner notification (Python wrapper with better control)
+    logger.info(f"Launching pync banner notification (Python wrapper)")
+    pync_banner = "/path/to/pelagos/pync_banner.py"
     process = subprocess.Popen(
-        [final_click_banner, title, subtitle, message],
+        [pync_banner, title, subtitle, message],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True
