@@ -22,6 +22,10 @@
                 {
                     "type": "hook",
                     "name": "isMagazine"
+                },
+                {
+                    "type": "hook",
+                    "name": "getFeaturedImage"
                 }
             ]
         },

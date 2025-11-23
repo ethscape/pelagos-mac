@@ -42,7 +42,7 @@ def send_to_server(message, port=9999):
         print(f"Server communication failed: {e}")
         return False
 
-def show_pync_banner(title, subtitle, message, port=9999, action_hash=None):
+def show_pync_banner(title, subtitle, message, port=9999, action_hash=None, content_image=None):
     """
     Show banner notification using pync and wait for user click or timeout.
     
@@ -52,6 +52,7 @@ def show_pync_banner(title, subtitle, message, port=9999, action_hash=None):
         message: Notification message
         port: Server port for communication
         action_hash: Hash key for the pending action (optional)
+        content_image: Path to image to display in notification (optional)
     """
     
     # Try to send SHOWN with action hash
@@ -75,12 +76,20 @@ def show_pync_banner(title, subtitle, message, port=9999, action_hash=None):
         else:
             execute_cmd = f'{venv_python} {callback_script} {port}'
         
+        notify_args = {
+            'title': title,
+            'subtitle': subtitle,
+            'sound': 'default',
+            'execute': execute_cmd
+        }
+        
+        # Add content image if provided
+        if content_image and os.path.exists(content_image):
+            notify_args['contentImage'] = content_image
+        
         Notifier.notify(
             f"{message} - Click this notification to EXECUTE",
-            title=title,
-            subtitle=subtitle,
-            sound='default',
-            execute=execute_cmd
+            **notify_args
         )
         
         print(f"Banner shown via pync with Python callback (hash: {action_hash}), waiting for click or timeout...")
@@ -119,11 +128,21 @@ def show_pync_banner(title, subtitle, message, port=9999, action_hash=None):
         send_to_server("SKIP", port)
 
 if __name__ == "__main__":
-    if len(sys.argv) >= 4:
-        title = sys.argv[1]
-        subtitle = sys.argv[2]
-        message = sys.argv[3]
-        action_hash = sys.argv[4] if len(sys.argv) > 4 else None
-        show_pync_banner(title, subtitle, message, action_hash=action_hash)
-    else:
-        print("Usage: pync_banner.py <title> <subtitle> <message> [action_hash]")
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Show pync banner notification')
+    parser.add_argument('title', help='Notification title')
+    parser.add_argument('subtitle', help='Notification subtitle')
+    parser.add_argument('message', help='Notification message')
+    parser.add_argument('action_hash', help='Action hash')
+    parser.add_argument('--content-image', help='Path to content image')
+    
+    args = parser.parse_args()
+    
+    show_pync_banner(
+        title=args.title,
+        subtitle=args.subtitle,
+        message=args.message,
+        action_hash=args.action_hash,
+        content_image=args.content_image
+    )

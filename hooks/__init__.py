@@ -2,9 +2,13 @@
 
 from importlib import import_module
 from pathlib import Path
-from typing import Dict, Callable, Any
+from typing import Dict, Callable, Any, Union, Tuple
 
-HookFunction = Callable[[Path, Dict[str, Any]], bool]
+# Hook can return:
+# - bool: simple pass/fail
+# - tuple (bool, dict): pass/fail with additional data
+HookResult = Union[bool, Tuple[bool, Dict[str, Any]]]
+HookFunction = Callable[[Path, Dict[str, Any]], HookResult]
 
 
 class HookRegistry:
@@ -26,6 +30,14 @@ class HookRegistry:
         if name not in self._hooks:
             raise KeyError(f"Hook '{name}' did not register correctly")
         return self._hooks[name]
+
+
+def normalize_hook_result(result: HookResult) -> Tuple[bool, Dict[str, Any]]:
+    """Normalize hook result to (bool, dict) format."""
+    if isinstance(result, tuple):
+        passed, data = result
+        return (passed, data if isinstance(data, dict) else {})
+    return (bool(result), {})
 
 
 registry = HookRegistry()

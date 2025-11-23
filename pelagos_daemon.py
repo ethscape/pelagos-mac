@@ -20,7 +20,7 @@ from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from urllib.parse import urlparse
 
-from hooks import registry
+from hooks import registry, normalize_hook_result
 from action_registry import get_registry
 
 # Configuration
@@ -152,13 +152,15 @@ def _extensions_match(action: Dict[str, Any], file_path: Path) -> bool:
     return False
 
 
-def _filters_match(action: Dict[str, Any], file_path: Path, context: Optional[Dict[str, Any]] = None) -> bool:
+def _filters_match(action: Dict[str, Any], file_path: Path, context: Optional[Dict[str, Any]] = None) -> Tuple[bool, Dict[str, Any]]:
+    """Check if filters match. Returns (matches, hook_data)."""
     filters = action.get('filters')
     if not filters:
-        return True
+        return (True, {})
 
     context = context or {}
     has_source = bool(context.get('has_source'))
+    hook_data = {}
 
     for filter_def in filters:
         filter_type = filter_def.get('type')
@@ -166,7 +168,7 @@ def _filters_match(action: Dict[str, Any], file_path: Path, context: Optional[Di
             pattern = filter_def.get('pattern')
             if not pattern:
                 logger.warning("Regex filter missing 'pattern'; skipping")
-                return False
+                return (False, hook_data)
 
             target = filter_def.get('target', 'filename')
             ignore_case = filter_def.get('ignoreCase', True)
@@ -176,7 +178,7 @@ def _filters_match(action: Dict[str, Any], file_path: Path, context: Optional[Di
                 compiled = re.compile(pattern, flags)
             except re.error as err:
                 logger.error(f"Invalid regex pattern '{pattern}': {err}")
-                return False
+                return (False, hook_data)
 
             if target == 'path':
                 target_value = str(file_path)
@@ -186,12 +188,12 @@ def _filters_match(action: Dict[str, Any], file_path: Path, context: Optional[Di
                 target_value = file_path.name
 
             if not compiled.search(target_value):
-                return False
+                return (False, hook_data)
         elif filter_type == 'hook':
             hook_name = filter_def.get('name')
             if not hook_name:
                 logger.warning("Hook filter missing 'name'")
-                return False
+                return (False, hook_data)
 
             hook_context = filter_def.get('context', {})
 
@@ -199,44 +201,52 @@ def _filters_match(action: Dict[str, Any], file_path: Path, context: Optional[Di
                 hook_func = registry.resolve(hook_name)
             except (KeyError, ModuleNotFoundError) as err:
                 logger.warning(f"Hook '{hook_name}' could not be resolved: {err}")
-                return False
+                return (False, hook_data)
 
             try:
-                if not hook_func(file_path, hook_context):
-                    return False
+                result = hook_func(file_path, hook_context)
+                passed, data = normalize_hook_result(result)
+                
+                # Merge hook data
+                if data:
+                    hook_data.update(data)
+                
+                if not passed:
+                    return (False, hook_data)
             except Exception as err:
                 logger.error(f"Hook '{hook_name}' raised an error for {file_path}: {err}")
-                return False
+                return (False, hook_data)
         elif filter_type == 'noSource':
             if has_source:
-                return False
+                return (False, hook_data)
         else:
             logger.warning(f"Unsupported filter type '{filter_type}' in common action '{action.get('name')}'")
-            return False
+            return (False, hook_data)
 
-    return True
+    return (True, hook_data)
 
 
-def action_matches_common_filters(action: Dict[str, Any], file_path: Path, context: Optional[Dict[str, Any]] = None) -> bool:
+def action_matches_common_filters(action: Dict[str, Any], file_path: Path, context: Optional[Dict[str, Any]] = None) -> Tuple[bool, Dict[str, Any]]:
+    """Check if action matches filters. Returns (matches, hook_data)."""
     if not _extensions_match(action, file_path):
-        return False
-    if not _filters_match(action, file_path, context):
-        return False
-    return True
+        return (False, {})
+    matches, hook_data = _filters_match(action, file_path, context)
+    return (matches, hook_data)
 
 
 def is_action_auto(action: Dict[str, Any]) -> bool:
     return bool(action.get('auto'))
 
 
-def find_default_common_action(file_path: Path, config: Dict[str, Any], *, has_source: bool = False) -> Optional[Dict[str, Any]]:
-    """Find first common action matching the provided file"""
+def find_default_common_action(file_path: Path, config: Dict[str, Any], *, has_source: bool = False) -> Tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    """Find first common action matching the provided file. Returns (action, hook_data)."""
     for common_action in config.get('commonActions', []):
-        if action_matches_common_filters(common_action, file_path, {'has_source': has_source}):
+        matches, hook_data = action_matches_common_filters(common_action, file_path, {'has_source': has_source})
+        if matches:
             logger.info(f"Matched common action '{common_action.get('name')}' for file {file_path.name} via filters")
-            return copy.deepcopy(common_action)
+            return (copy.deepcopy(common_action), hook_data)
 
-    return None
+    return (None, {})
 
 
 def _escape_applescript_string(value: str) -> str:
@@ -279,7 +289,9 @@ def confirm_action_execution(file_path: Path, action: Dict[str, Any]) -> Tuple[b
         return True, "already_confirmed"
     
     # Try banner notification with action registry
-    action_hash = _try_banner_notification(file_path, action, 'single')
+    # Extract hook_data if stored in action
+    hook_data = action.pop('_hook_data', {})
+    action_hash = _try_banner_notification(file_path, action, 'single', hook_data=hook_data)
     if action_hash:
         # Wait for user response via port communication (only EXECUTE will trigger response)
         logger.info("Waiting for user response via port communication")
@@ -313,14 +325,18 @@ def confirm_action_execution(file_path: Path, action: Dict[str, Any]) -> Tuple[b
 
 
 def _try_banner_notification(file_path: Path, action: Dict[str, Any], action_type: str = 'single', 
-                             available_actions: Optional[list] = None) -> Optional[str]:
+                             available_actions: Optional[list] = None, hook_data: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """
     Try to show a banner notification using port communication with action registry.
+    
+    Args:
+        hook_data: Additional data from hooks (e.g., contentImage path)
     
     Returns:
         action_hash if notification shown, None if failed
     """
     logger.info("Attempting banner notification via port communication")
+    hook_data = hook_data or {}
     
     # Start notification server if not already running
     global notification_server
@@ -349,8 +365,14 @@ def _try_banner_notification(file_path: Path, action: Dict[str, Any], action_typ
     # Launch pync banner notification with action hash
     logger.info(f"Launching pync banner notification (Python wrapper)")
     pync_banner = "/path/to/pelagos/pync_banner.py"
+    
+    # Build command with optional content image
+    cmd = [pync_banner, title, subtitle, message, action_hash]
+    if hook_data.get('contentImage'):
+        cmd.extend(['--content-image', hook_data['contentImage']])
+    
     process = subprocess.Popen(
-        [pync_banner, title, subtitle, message, action_hash],
+        cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True
@@ -451,17 +473,22 @@ def prompt_user_for_common_action(file_path: Path, config: Dict[str, Any], defau
     if not actions:
         return None
 
-    filtered_actions = [
-        action for action in actions
-        if action.get('name') and action_matches_common_filters(action, file_path, {'has_source': has_source})
-    ]
+    # Collect actions and their hook data
+    filtered_actions_with_data = []
+    for action in actions:
+        if action.get('name'):
+            matches, hook_data = action_matches_common_filters(action, file_path, {'has_source': has_source})
+            if matches:
+                filtered_actions_with_data.append((action, hook_data))
+    
+    filtered_actions = [action for action, _ in filtered_actions_with_data]
 
     if not filtered_actions:
         logger.info(f"No common action templates matched filters for {file_path.name}")
         return None
 
-    if len(filtered_actions) == 1:
-        single_action = filtered_actions[0]
+    if len(filtered_actions_with_data) == 1:
+        single_action, hook_data = filtered_actions_with_data[0]
         name = single_action.get('name') or single_action.get('type', 'action')
         target = single_action.get('target', '')
         message = f"{file_path.name} ➜ {target}" if target else file_path.name
@@ -470,7 +497,7 @@ def prompt_user_for_common_action(file_path: Path, config: Dict[str, Any], defau
         )
         
         # Use banner notification with action registry
-        action_hash = _try_banner_notification(file_path, single_action, 'single')
+        action_hash = _try_banner_notification(file_path, single_action, 'single', hook_data=hook_data)
         if action_hash:
             # Wait for response (only EXECUTE will trigger response)
             response = notification_server.wait_for_response(timeout=30)
@@ -514,7 +541,9 @@ def prompt_user_for_common_action(file_path: Path, config: Dict[str, Any], defau
     }
     
     # Try banner notification with action registry
-    action_hash = _try_banner_notification(file_path, banner_action, 'multiple', available_actions=filtered_actions)
+    # For multiple actions, use hook_data from first matching action
+    first_hook_data = filtered_actions_with_data[0][1] if filtered_actions_with_data else {}
+    action_hash = _try_banner_notification(file_path, banner_action, 'multiple', available_actions=filtered_actions, hook_data=first_hook_data)
     if action_hash:
         # Wait for response (only EXECUTE will trigger response)
         response = notification_server.wait_for_response(timeout=30)
@@ -696,12 +725,15 @@ def process_file(file_path, config: Dict[str, Any]):
             has_source = True
         else:
             has_source = False
-            default_common = find_default_common_action(path_obj, config, has_source=has_source)
+            default_common, hook_data = find_default_common_action(path_obj, config, has_source=has_source)
             default_name = default_common.get('name') if default_common else None
 
             if default_common and is_action_auto(default_common):
                 logger.info(f"Auto-executing common action '{default_name}' for {path_obj.name}")
                 action = default_common
+                # Store hook_data for later use
+                if hook_data:
+                    action['_hook_data'] = hook_data
             elif config.get('commonActions'):
                 logger.debug(f"No source matched for {file_path}. Prompting user for common action selection.")
                 action = prompt_user_for_common_action(path_obj, config, default_action_name=default_name, has_source=has_source)
