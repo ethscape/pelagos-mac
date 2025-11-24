@@ -1134,63 +1134,75 @@ def process_file(file_path, config: Dict[str, Any], mark_processed_callback=None
                 logger.info(f"Spoke action name: {action_name}")
             except Exception as e:
                 logger.warning(f"Failed to speak action name: {e}")
-        
+
         logger.info(f"=== END PROCESSING FILE: {file_path} (SUCCESS) ===")
-        
+
         # Mark file as successfully processed
         if mark_processed_callback:
             mark_processed_callback()
-            
+
     except Exception as err:
         logger.error(f"Error processing file {file_path}: {err}")
         logger.error(f"Traceback: {traceback.format_exc()}")
         logger.info(f"=== END PROCESSING FILE: {file_path} (ERROR) ===")
+        # Clean up from processing set even on error
+        if mark_processed_callback:
+            mark_processed_callback()
         return
 
 
 class DownloadsHandler(FileSystemEventHandler):
     """Handler for file system events in Downloads folder"""
-    
+
     def __init__(self, config):
         self.config = config
-        self.processed_files = set()
-    
+        self.processed_files = set()  # Files that have been successfully processed
+        self.processing_files = set()  # Files currently being processed
+
     def on_created(self, event):
         """Handle file creation events"""
         self._handle_file_event(event)
-    
+
     def on_modified(self, event):
         """Handle file modification events"""
         # Only process if it's a new file that hasn't been processed yet
         # (some systems fire both created and modified for new files)
         self._handle_file_event(event)
-    
+
     def _handle_file_event(self, event):
         """Common file event handling"""
         if event.is_directory:
             return
-        
+
         file_path = event.src_path
-        
+
         # Avoid processing the same file multiple times
         if file_path in self.processed_files:
             logger.info(f"Skipping already processed file: {file_path}")
             return
-        
+
+        if file_path in self.processing_files:
+            logger.info(f"Skipping file currently being processed: {file_path}")
+            return
+
+        # Mark as being processed
+        self.processing_files.add(file_path)
         logger.info(f"Processing new file: {file_path} (event: {event.event_type})")
-        
+
         # Process the file in a separate thread to allow concurrent processing
         import threading
         thread = threading.Thread(target=process_file, args=(file_path, self.config, lambda: self._mark_processed(file_path)), daemon=True)
         thread.start()
-        
+
         # Clean up processed files set to avoid memory leak
         if len(self.processed_files) > 1000:
             self.processed_files.clear()
-    
+
     def _mark_processed(self, file_path):
         """Mark a file as processed after successful handling"""
         self.processed_files.add(file_path)
+        # Remove from processing set
+        self.processing_files.discard(file_path)
 
 
 def check_single_instance():
