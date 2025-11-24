@@ -227,14 +227,16 @@ Press `Ctrl+C` to stop.
 
 ## Notification System
 
-Pelagos uses the **alerter** tool for macOS banner notifications:
+Pelagos uses the **alerter** tool for macOS banner notifications. Alerter is a powerful command-line tool for creating native macOS notifications with rich features.
 
-- **Banner notifications** appear in the top-right corner
-- **Content images** are displayed when available (via `getFeaturedImage` hook)
-- **Click-to-execute**: Single actions execute when you click the notification body
-- **Dropdown selection**: Multiple actions show a dropdown menu
-- **No timeouts**: Notifications persist until you interact with them
-- **Local server**: Communication via localhost port 9999
+**Alerter features used:**
+- Banner notifications with custom titles and messages
+- Dropdown menus for action selection
+- Content image display
+- Click-to-execute functionality
+- JSON output for programmatic interaction
+
+Alerter is developed by [vjeux](https://github.com/vjeux) and available at [https://github.com/vjeux/alerter](https://github.com/vjeux/alerter).
 
 ### Notification Behavior
 
