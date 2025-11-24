@@ -8,6 +8,8 @@ A macOS daemon that monitors your Downloads folder and automatically transfers f
 - Checks the "Where from" metadata of downloaded files
 - Matches files against configured sources
 - Supports SCP transfer action
+- Banner notifications using alerter with image preview
+- Interactive notification system with click-to-execute
 - Runs as a background daemon using launchd
 
 ## Installation
@@ -24,6 +26,7 @@ cd /path/to/pelagos
 This will:
 - Create a virtual environment
 - Install Python dependencies
+- Install alerter for banner notifications
 - Make scripts executable
 - Install and start the daemon
 - Register the Pelagos app wrapper so the daemon appears with name and icon in System Settings
@@ -112,8 +115,9 @@ Edit `config.json` to configure sources and actions:
 - **overwriteRule**: How to handle existing files (future feature)
 - **auto**:
   - If `true`, the action executes immediately without user interaction.
-  - If `false`, Pelagos shows an AppleScript **dialog** with **Execute / Skip** buttons asking you to confirm the action.
-  - Pelagos waits up to 2 minutes for a response before timing out and skipping the action.
+  - If `false`, Pelagos shows a **banner notification** with the action details.
+  - Click the notification body (for single actions) or use the dropdown (multiple actions) to execute.
+  - Notifications persist indefinitely until user interaction.
 - **commonActions**: Array of reusable action templates.
   - Each template may include legacy `extensions` patterns (wildcards like `cb?`) and/or rich `filters` (e.g., regex) to decide when the template applies.
   - Files without a source match will try to match these templates using their filters.
@@ -124,30 +128,42 @@ Edit `config.json` to configure sources and actions:
   - `noSource` filter ensures a common action only runs when the downloaded file had no matching source.
   - When no source matches, Pelagos prompts you to pick a common action filtered to only those whose rules match the file. If the prompt cannot be shown (e.g., headless), it falls back to the best-matching template unless `commonActionsPromptRequired` is set to `true` in the config.
 
-## Hooks
+## Supported Actions
 
-- Hook implementations live in `hooks/` and are loaded on demand.
-- Each hook module exposes a `register(registry)` function that registers one or more hook callables.
-- Common-action filters of type `hook` reference these callables by name and can pass optional `context` data.
-- Hooks like `isMagazine` can inspect archive contents (e.g., single folder of sequentially numbered images) before allowing the action.
-- You can pass `filters` context to hooks (e.g., `"context": { "allowedNames": ["cover.webp", "credits.png"] }`) to fine-tune behavior.
-- `is3DModel` returns `true` when a supported archive contains at least one common 3D asset file extension (customizable via `context.extensions`).
-- `noSource` filter ensures a common action only runs when the downloaded file had no matching source.
-- When no source matches, Pelagos prompts you to pick a common action filtered to only those whose rules match the file. If the prompt cannot be shown (e.g., headless), it falls back to the best-matching template unless `commonActionsPromptRequired` is set to `true` in the config.
+### SCP Action
+Transfers files to a remote server via SCP.
 
-### Testing hooks manually
-
-Each hook module can be executed as a script for quick checks:
-
-```bash
-# Magazine heuristic (add --allowed-name for extra exceptions)
-python -m hooks.isMagazine ~/Downloads/book.cbz --verbose
-
-# 3D model detection (add --extension for custom formats)
-python -m hooks.is3DModel ~/Downloads/models.zip
+**Configuration:**
+```json
+{
+    "type": "scp",
+    "target": "hostname:/path/to/destination",
+    "username": "username",
+    "privateKey": "/path/to/private/key",
+    "keepOriginal": false,
+    "rename": "{{title}}.{{extension}}",
+    "overwriteRule": "rename"
+}
 ```
 
-Both commands exit with status 0 on success and print PASS/FAIL diagnostics.
+**Options:**
+- `target`: Remote destination in format `host:/path`
+- `username`: SSH username for authentication
+- `privateKey`: Path to SSH private key file
+- `keepOriginal`: If `false`, deletes original file after successful transfer
+- `rename`: Filename template (supports `{{title}}` and `{{extension}}`)
+- `overwriteRule`: How to handle existing files (currently only "rename" supported)
+
+### Dummy Action
+Test action that speaks the action name using macOS text-to-speech.
+
+**Configuration:**
+```json
+{
+    "type": "dummy",
+    "name": "Test Action"
+}
+```
 
 ## Usage
 
@@ -171,13 +187,7 @@ launchctl list | grep pelagos
 
 ### View Logs
 
-Use the included log viewer script:
-
-```bash
-./watch-logs.sh
-```
-
-Or manually:
+Monitor the daemon logs:
 
 ```bash
 # Main log
@@ -208,8 +218,29 @@ Press `Ctrl+C` to stop.
 1. The daemon watches the Downloads folder for new files
 2. When a file is created, it reads the `com.apple.metadata:kMDItemWhereFroms` extended attribute
 3. The source URL is extracted and matched against configured sources
-4. If a match is found, the configured action is executed
-5. If no source matches, Pelagos offers matching common actions (or falls back automatically if prompting is unavailable)
+4. If a match is found:
+   - For `auto: true` actions: executes immediately
+   - For `auto: false` actions: shows a banner notification with alerter
+5. User clicks notification to execute, or selects from dropdown for multiple actions
+6. If no source matches, Pelagos offers matching common actions via notification system
+7. A local notification server (port 9999) handles communication between alerter and the daemon
+
+## Notification System
+
+Pelagos uses the **alerter** tool for macOS banner notifications:
+
+- **Banner notifications** appear in the top-right corner
+- **Content images** are displayed when available (via `getFeaturedImage` hook)
+- **Click-to-execute**: Single actions execute when you click the notification body
+- **Dropdown selection**: Multiple actions show a dropdown menu
+- **No timeouts**: Notifications persist until you interact with them
+- **Local server**: Communication via localhost port 9999
+
+### Notification Behavior
+
+- **Single action**: Click anywhere on the notification to execute
+- **Multiple actions**: Click the dropdown to select an action, then Execute
+- **Skip option**: Use the close button or "Skip" to ignore the action
 
 ## Hooks
 
@@ -217,6 +248,133 @@ Press `Ctrl+C` to stop.
 - Each hook module exposes a `register(registry)` function that registers one or more hook callables.
 - Common-action filters of type `hook` reference these callables by name and can pass optional `context` data.
 - `isMagazine` inspects archives and returns `true` when they contain a single directory of sequentially numbered images. It supports `.zip/.cbz` natively and `.rar/.cbr` when the optional `rarfile` dependency is installed.
+
+### Testing hooks manually
+
+Each hook module can be executed as a script for quick checks:
+
+```bash
+# Magazine heuristic (add --allowed-name for extra exceptions)
+python hooks/isMagazine ~/Downloads/book.cbz --verbose
+
+# 3D model detection (add --extension for custom formats)
+python hooks/is3DModel ~/Downloads/models.zip
+
+# Extension change
+python hooks/changeExtension.py test.zip --ext '{"zip": "cbz", "rar": "cbr"}'
+```
+
+All commands exit with status 0 on success and print PASS/FAIL diagnostics.
+
+### Available Hooks
+
+#### isMagazine
+Detects if an archive contains magazine-style content (single folder with sequentially numbered images).
+
+**Supported formats:**
+- `.zip`, `.cbz` (native)
+- `.rar`, `.cbr` (requires `rarfile` dependency)
+
+**Configuration:**
+```json
+{
+    "type": "hook",
+    "name": "isMagazine",
+    "context": {
+        "allowedNames": ["cover.webp", "credits.png"],
+        "allowedStems": ["title", "toc"]
+    }
+}
+```
+
+**Testing:**
+```bash
+python hooks/isMagazine.py ~/Downloads/archive.cbz --verbose
+```
+
+#### getFeaturedImage
+Extracts the first image from an archive to use as a notification content image.
+
+**Supported formats:**
+- `.zip`, `.cbz`, `.rar`, `.cbr`
+
+**Configuration:**
+```json
+{
+    "type": "hook",
+    "name": "getFeaturedImage"
+}
+```
+
+**Returns:** Path to extracted image in temp directory
+
+#### is3DModel
+Detects if an archive contains 3D model files.
+
+**Supported formats:**
+- `.blend`, `.fbx`, `.obj`, `.dae`, `.gltf`, `.glb`, `.3ds`, `.stl`
+
+**Configuration:**
+```json
+{
+    "type": "hook",
+    "name": "is3DModel",
+    "context": {
+        "extensions": [".blend", ".fbx", ".obj"]
+    }
+}
+```
+
+**Testing:**
+```bash
+python hooks/is3DModel.py ~/Downloads/models.zip
+```
+
+#### changeExtension
+Changes file extensions during action execution.
+
+**Use case:** Convert `.zip` to `.cbz` or `.rar` to `.cbr` for comic archives.
+
+**Configuration:**
+```json
+{
+    "type": "hook",
+    "name": "changeExtension",
+    "extensions": {
+        "zip": "cbz",
+        "rar": "cbr"
+    }
+}
+```
+
+**Testing:**
+```bash
+python hooks/changeExtension.py test.zip --ext '{"zip": "cbz", "rar": "cbr"}'
+```
+
+#### Built-in Filters
+
+##### regex
+Matches filenames against a regular expression pattern.
+
+**Configuration:**
+```json
+{
+    "type": "regex",
+    "pattern": "^.*\\.(cb.|zip|rar)$",
+    "ignoreCase": true
+}
+```
+
+##### noSource
+Ensures the action only runs when the file has no matching source URL.
+
+**Configuration:**
+```json
+{
+    "type": "noSource"
+}
+```
 
 ## Troubleshooting
 
