@@ -82,6 +82,39 @@ check_port() {
     fi
 }
 
+# Function to check if Pelagos is using the port
+check_pelagos_on_port() {
+    local port=$1
+    local pid=$(lsof -ti :$port 2>/dev/null)
+    if [ -n "$pid" ]; then
+        # Check the full command line for pelagos_daemon.py
+        local cmdline=$(ps -p $pid -o command= 2>/dev/null)
+        if echo "$cmdline" | grep -q "pelagos_daemon.py"; then
+            return 0  # Pelagos is using the port
+        fi
+    fi
+    return 1  # Either port not in use or not Pelagos
+}
+
+# Function to stop existing Pelagos daemon
+stop_pelagos_daemon() {
+    echo "🛑 Stopping existing Pelagos daemon..."
+    if launchctl list | grep -q "com.pelagos.daemon"; then
+        launchctl unload "$HOME/Library/LaunchAgents/com.pelagos.daemon.plist" 2>/dev/null || true
+        echo "✓ Unloaded daemon from launchctl"
+    fi
+    
+    # Kill any remaining pelagos processes
+    local pids=$(pgrep -f "pelagos_daemon.py" 2>/dev/null || true)
+    if [ -n "$pids" ]; then
+        echo "$pids" | xargs kill 2>/dev/null || true
+        echo "✓ Terminated remaining daemon processes"
+    fi
+    
+    # Wait a moment for processes to stop
+    sleep 2
+}
+
 # Function to find an available port
 find_available_port() {
     local start_port=$1
@@ -114,26 +147,50 @@ fi
 if ! check_port $CURRENT_PORT; then
     echo "⚠️  Port $CURRENT_PORT is already in use"
     
-    # Find an available port
-    AVAILABLE_PORT=$(find_available_port $DEFAULT_PORT $MAX_PORT)
-    
-    if [ $? -eq 0 ]; then
+    # Check if Pelagos is using the port
+    if check_pelagos_on_port $CURRENT_PORT; then
         echo ""
-        echo "💡 Suggestion: Use port $AVAILABLE_PORT instead"
+        echo "🤖 Pelagos daemon is already running on port $CURRENT_PORT"
         echo ""
-        echo "To update your configuration, edit $CONFIG_FILE and update:"
-        echo ""
-        echo "{"
-        echo "    \"port\": $AVAILABLE_PORT,"
-        echo "    \"sources\": [],"
-        echo "    \"commonActions\": []"
-        echo "}"
-        echo ""
-        read -p "Would you like to update the config file now? (y/N): " -n 1 -r
+        read -p "Would you like to stop the existing daemon and continue? (y/N): " -n 1 -r
         echo ""
         if [[ $REPLY =~ ^[Yy]$ ]]; then
-            # Update the config file
-            python3 -c "
+            stop_pelagos_daemon
+            
+            # Check if port is now available
+            if check_port $CURRENT_PORT; then
+                echo "✓ Port $CURRENT_PORT is now available"
+            else
+                echo "⚠️  Port $CURRENT_PORT is still in use after stopping daemon"
+                # Fall through to suggest alternative port
+            fi
+        else
+            echo "⚠️  Continuing with port $CURRENT_PORT (may cause conflicts)"
+        fi
+    fi
+    
+    # If port is still in use, suggest alternative
+    if ! check_port $CURRENT_PORT; then
+        # Find an available port
+        AVAILABLE_PORT=$(find_available_port $DEFAULT_PORT $MAX_PORT)
+        
+        if [ $? -eq 0 ]; then
+            echo ""
+            echo "💡 Suggestion: Use port $AVAILABLE_PORT instead"
+            echo ""
+            echo "To update your configuration, edit $CONFIG_FILE and update:"
+            echo ""
+            echo "{"
+            echo "    \"port\": $AVAILABLE_PORT,"
+            echo "    \"sources\": [],"
+            echo "    \"commonActions\": []"
+            echo "}"
+            echo ""
+            read -p "Would you like to update the config file now? (y/N): " -n 1 -r
+            echo ""
+            if [[ $REPLY =~ ^[Yy]$ ]]; then
+                # Update the config file
+                python3 -c "
 import json
 
 try:
@@ -155,14 +212,15 @@ with open('$CONFIG_FILE', 'w') as f:
 
 print('✓ Updated config.json with port $AVAILABLE_PORT')
 "
-            CURRENT_PORT=$AVAILABLE_PORT
+                CURRENT_PORT=$AVAILABLE_PORT
+            else
+                echo "⚠️  Continuing with port $CURRENT_PORT (may cause conflicts)"
+            fi
         else
-            echo "⚠️  Continuing with port $CURRENT_PORT (may cause conflicts)"
+            echo "❌ No available ports found in range $DEFAULT_PORT-$MAX_PORT"
+            echo "   Please free up a port in this range and try again"
+            exit 1
         fi
-    else
-        echo "❌ No available ports found in range $DEFAULT_PORT-$MAX_PORT"
-        echo "   Please free up a port in this range and try again"
-        exit 1
     fi
 else
     echo "✓ Port $CURRENT_PORT is available"
