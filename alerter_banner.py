@@ -25,24 +25,37 @@ else:
     sys.exit(1)
 
 
-def send_to_server(message, port=9999):
+def send_to_server(message, port=None):
     """Send message to notification server"""
+    if port is None:
+        # Get the actual port from the notification server
+        try:
+            from notify_server import notification_server
+            port = notification_server.get_port()
+        except ImportError:
+            port = 9999  # Fallback to default port
+    
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5)  # 5 second timeout
         sock.connect(('localhost', port))
         sock.send(message.encode('utf-8'))
         
-        # Wait for ACK
+        # Wait for acknowledgment
         ack = sock.recv(1024).decode('utf-8')
         sock.close()
         
-        return ack == "ACK"
+        if ack == "ACK":
+            return True
+        else:
+            print(f"Unexpected acknowledgment: {ack}", file=sys.stderr)
+            return False
     except Exception as e:
-        print(f"Error sending to server: {e}")
+        print(f"Error sending to server: {e}", file=sys.stderr)
         return False
 
 
-def show_alerter_banner(title, subtitle, message, port=9999, action_hash=None, content_image=None, available_actions=None):
+def show_alerter_banner(title, subtitle, message, port=None, action_hash=None, content_image=None, available_actions=None):
     """
     Show banner notification using alerter and wait for user click or timeout.
     
@@ -50,11 +63,18 @@ def show_alerter_banner(title, subtitle, message, port=9999, action_hash=None, c
         title: Notification title
         subtitle: Notification subtitle
         message: Notification message
-        port: Port for notification server communication
+        port: Port for notification server communication (None to auto-detect)
         action_hash: Unique hash for this action
         content_image: Path to image file to display
         available_actions: List of available actions (for multiple actions case)
     """
+    # Get the actual port if not provided
+    if port is None:
+        try:
+            from notify_server import notification_server
+            port = notification_server.get_port()
+        except ImportError:
+            port = 9999  # Fallback to default port
     # Prepare alerter command
     alerter_path = os.path.expanduser("~/.local/bin/alerter")
     if not os.path.exists(alerter_path):

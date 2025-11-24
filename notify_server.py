@@ -4,12 +4,14 @@ import threading
 import logging
 
 class NotificationServer:
-    def __init__(self, port=9999):
+    def __init__(self, port=9999, max_port=None):
         self.port = port
+        self.max_port = max_port  # Only used if port is 0 (auto-detect)
         self.server_socket = None
         self.running = False
         self.current_response = None
         self.response_event = threading.Event()
+        self.actual_port = None
         
     def start(self):
         """Start the notification server"""
@@ -17,19 +19,31 @@ class NotificationServer:
         if self.running:
             return None
             
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind(('localhost', self.port))
-        self.server_socket.listen(1)
-        self.running = True
-        
-        logging.info(f"Notification server listening on port {self.port}")
-        
-        # Start server thread
-        server_thread = threading.Thread(target=self._accept_connections, daemon=True)
-        server_thread.start()
-        
-        return server_thread
+        # Use the configured port directly (install.sh ensures it's available)
+        try:
+            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.server_socket.bind(('localhost', self.port))
+            self.server_socket.listen(1)
+            self.actual_port = self.port
+            self.running = True
+            
+            logging.info(f"Notification server listening on port {self.actual_port}")
+            
+            # Start server thread
+            server_thread = threading.Thread(target=self._accept_connections, daemon=True)
+            server_thread.start()
+            
+            return server_thread
+            
+        except OSError as e:
+            if "Address already in use" in str(e):
+                logging.error(f"Port {self.port} is already in use. Please run install.sh to check port availability.")
+            else:
+                logging.error(f"Error binding to port {self.port}: {e}")
+            if self.server_socket:
+                self.server_socket.close()
+            return None
     
     def _accept_connections(self):
         """Accept incoming connections"""
@@ -159,6 +173,10 @@ class NotificationServer:
             return response
         else:
             return None
+    
+    def get_port(self):
+        """Get the actual port the server is listening on"""
+        return self.actual_port or self.port
     
     def stop(self):
         """Stop the server"""

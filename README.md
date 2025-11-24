@@ -244,6 +244,33 @@ Alerter is developed by [vjeux](https://github.com/vjeux) and available at [http
 - **Multiple actions**: Click the dropdown to select an action, then Execute
 - **Skip option**: Use the close button or "Skip" to ignore the action
 
+### Port Configuration
+
+Pelagos uses a local notification server for communication between alerter and the daemon. You can customize the port in `config.json`:
+
+```json
+{
+    "port": 9999,
+    "sources": [],
+    "commonActions": []
+}
+```
+
+**Options:**
+- **port**: Port for the notification server (default: 9999)
+
+**Installation Check:**
+- The install.sh script checks if the configured port is available
+- If the port is in use, it suggests an alternative port
+- You can choose to update the config automatically during installation
+
+**Behavior:**
+- The daemon uses the configured port directly
+- If the port is busy when starting, the daemon will fail with an error
+- Run install.sh again to check and update port configuration
+
+The installation script ensures port conflicts are resolved before the daemon starts.
+
 ## Hooks
 
 - Hook implementations live in `hooks/` and are loaded on demand.

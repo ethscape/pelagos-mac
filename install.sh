@@ -65,6 +65,109 @@ if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
     echo "✓ Added ~/.local/bin to PATH in .zshrc"
 fi
 
+# Check notification port availability
+echo ""
+echo "🔌 Checking notification port availability..."
+CONFIG_FILE="$SCRIPT_DIR/config.json"
+DEFAULT_PORT=9999
+MAX_PORT=10010
+
+# Function to check if port is available
+check_port() {
+    local port=$1
+    if lsof -i :$port >/dev/null 2>&1; then
+        return 1  # Port is in use
+    else
+        return 0  # Port is available
+    fi
+}
+
+# Function to find an available port
+find_available_port() {
+    local start_port=$1
+    local end_port=$2
+    
+    for port in $(seq $start_port $end_port); do
+        if check_port $port; then
+            echo $port
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Read current port from config.json
+CURRENT_PORT=$DEFAULT_PORT
+if [ -f "$CONFIG_FILE" ]; then
+    CURRENT_PORT=$(python3 -c "
+import json
+try:
+    with open('$CONFIG_FILE', 'r') as f:
+        config = json.load(f)
+        print(config.get('port', $DEFAULT_PORT))
+except:
+    print($DEFAULT_PORT)
+" 2>/dev/null || echo $DEFAULT_PORT)
+fi
+
+# Check if current port is available
+if ! check_port $CURRENT_PORT; then
+    echo "⚠️  Port $CURRENT_PORT is already in use"
+    
+    # Find an available port
+    AVAILABLE_PORT=$(find_available_port $DEFAULT_PORT $MAX_PORT)
+    
+    if [ $? -eq 0 ]; then
+        echo ""
+        echo "💡 Suggestion: Use port $AVAILABLE_PORT instead"
+        echo ""
+        echo "To update your configuration, edit $CONFIG_FILE and update:"
+        echo ""
+        echo "{"
+        echo "    \"port\": $AVAILABLE_PORT,"
+        echo "    \"sources\": [],"
+        echo "    \"commonActions\": []"
+        echo "}"
+        echo ""
+        read -p "Would you like to update the config file now? (y/N): " -n 1 -r
+        echo ""
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            # Update the config file
+            python3 -c "
+import json
+
+try:
+    with open('$CONFIG_FILE', 'r') as f:
+        config = json.load(f)
+except:
+    config = {}
+
+config['port'] = $AVAILABLE_PORT
+
+# Ensure sources and commonActions exist
+if 'sources' not in config:
+    config['sources'] = []
+if 'commonActions' not in config:
+    config['commonActions'] = []
+
+with open('$CONFIG_FILE', 'w') as f:
+    json.dump(config, f, indent=4)
+
+print('✓ Updated config.json with port $AVAILABLE_PORT')
+"
+            CURRENT_PORT=$AVAILABLE_PORT
+        else
+            echo "⚠️  Continuing with port $CURRENT_PORT (may cause conflicts)"
+        fi
+    else
+        echo "❌ No available ports found in range $DEFAULT_PORT-$MAX_PORT"
+        echo "   Please free up a port in this range and try again"
+        exit 1
+    fi
+else
+    echo "✓ Port $CURRENT_PORT is available"
+fi
+
 # Make the daemon script executable
 echo ""
 echo "🔧 Making daemon script executable..."

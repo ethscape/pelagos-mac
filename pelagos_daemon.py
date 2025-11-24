@@ -52,10 +52,15 @@ def load_config() -> Dict[str, Any]:
             # Provide defaults to avoid KeyErrors later
             config.setdefault('sources', [])
             config.setdefault('commonActions', [])
+            config.setdefault('port', 9999)
             return config
     except Exception as e:
         logger.error(f"Failed to load config: {e}")
-        return {"sources": [], "commonActions": []}
+        return {
+            "sources": [], 
+            "commonActions": [],
+            "port": 9999
+        }
 
 
 def get_file_source(file_path):
@@ -273,7 +278,7 @@ def send_notification(title: str, subtitle: Optional[str], message: str) -> None
         logger.debug(f"Failed to send notification: {err}")
 
 
-def confirm_action_execution(file_path: Path, action: Dict[str, Any]) -> Tuple[bool, str]:
+def confirm_action_execution(file_path: Path, action: Dict[str, Any], config: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
     """
     Confirm action execution with the user.
     
@@ -291,7 +296,7 @@ def confirm_action_execution(file_path: Path, action: Dict[str, Any]) -> Tuple[b
     # Try banner notification with action registry
     # Extract hook_data if stored in action
     hook_data = action.pop('_hook_data', {})
-    action_hash = _try_banner_notification(file_path, action, 'single', hook_data=hook_data)
+    action_hash = _try_banner_notification(file_path, action, 'single', hook_data=hook_data, config=config)
     if action_hash:
         # Wait for user response via port communication (only EXECUTE will trigger response)
         logger.info("Waiting for user response via port communication")
@@ -325,7 +330,8 @@ def confirm_action_execution(file_path: Path, action: Dict[str, Any]) -> Tuple[b
 
 
 def _try_banner_notification(file_path: Path, action: Dict[str, Any], action_type: str = 'single', 
-                             available_actions: Optional[list] = None, hook_data: Optional[Dict[str, Any]] = None) -> Optional[str]:
+                             available_actions: Optional[list] = None, hook_data: Optional[Dict[str, Any]] = None, 
+                             config: Optional[Dict[str, Any]] = None) -> Optional[str]:
     """
     Try to show a banner notification using port communication with action registry.
     
@@ -342,7 +348,10 @@ def _try_banner_notification(file_path: Path, action: Dict[str, Any], action_typ
     global notification_server
     if notification_server is None:
         from notify_server import NotificationServer
-        notification_server = NotificationServer()
+        # Get port configuration from config
+        port = config.get('port', 9999) if config else 9999
+        
+        notification_server = NotificationServer(port=port)
         notification_server.start()
         time.sleep(0.5)  # Give server time to start
     
@@ -546,7 +555,7 @@ def prompt_user_for_common_action(file_path: Path, config: Dict[str, Any], defau
         # Pass the single action as available_actions for proper handling
         action_hash = _try_banner_notification(file_path, single_action, 'single', 
                                               available_actions=[single_action], 
-                                              hook_data=hook_data)
+                                              hook_data=hook_data, config=config)
         if action_hash is None:
             # User closed/ignored notification - fall through to show all matching actions
             # Get ALL actions that match the file extension (not just filtered ones)
@@ -617,7 +626,7 @@ def prompt_user_for_common_action(file_path: Path, config: Dict[str, Any], defau
     # Try banner notification with action registry
     # For multiple actions, use hook_data from first matching action
     first_hook_data = filtered_actions_with_data[0][1] if filtered_actions_with_data else {}
-    action_hash = _try_banner_notification(file_path, banner_action, 'multiple', available_actions=filtered_actions, hook_data=first_hook_data)
+    action_hash = _try_banner_notification(file_path, banner_action, 'multiple', available_actions=filtered_actions, hook_data=first_hook_data, config=config)
     if action_hash is None:
         # User clicked alert body or alerter failed - show action selection dialog
         logger.info(f"User clicked alert body for {file_path.name} - showing action selection dialog")
@@ -1028,7 +1037,7 @@ def process_file(file_path, config: Dict[str, Any]):
         logger.info(f"Action: {action}, manual_selection: {manual_selection}, is_auto: {is_action_auto(action) if action else 'N/A'}")
 
         if not is_action_auto(action) and not manual_selection:
-            confirmed, reason = confirm_action_execution(path_obj, action)
+            confirmed, reason = confirm_action_execution(path_obj, action, config)
             if not confirmed:
                 log_message = f"Action skipped for {path_obj.name} (reason: {reason})"
                 if reason == "user_skip":
