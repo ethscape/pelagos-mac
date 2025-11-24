@@ -53,13 +53,19 @@ def load_config() -> Dict[str, Any]:
             config.setdefault('sources', [])
             config.setdefault('commonActions', [])
             config.setdefault('port', 9999)
+            config.setdefault('folders', [
+                {"path": "~/Downloads", "recursive": False}
+            ])
             return config
     except Exception as e:
         logger.error(f"Failed to load config: {e}")
         return {
             "sources": [], 
             "commonActions": [],
-            "port": 9999
+            "port": 9999,
+            "folders": [
+                {"path": "~/Downloads", "recursive": False}
+            ]
         }
 
 
@@ -1143,17 +1149,34 @@ def main():
     check_single_instance()
     
     logger.info("Starting Pelagos daemon")
-    logger.info(f"Monitoring folder: {DOWNLOADS_FOLDER}")
     logger.info(f"Config file: {CONFIG_PATH}")
     
     # Load configuration
     config = load_config()
     logger.info(f"Loaded {len(config.get('sources', []))} source(s)")
     
-    # Create observer
+    # Get folders to monitor
+    folders = config.get('folders', [{"path": "~/Downloads", "recursive": False}])
+    
+    # Create observer and handler
     event_handler = DownloadsHandler(config)
     observer = Observer()
-    observer.schedule(event_handler, str(DOWNLOADS_FOLDER), recursive=False)
+    
+    # Schedule each folder
+    for folder_config in folders:
+        folder_path = Path(folder_config["path"]).expanduser()
+        recursive = folder_config.get("recursive", False)
+        
+        if not folder_path.exists():
+            logger.warning(f"Folder does not exist: {folder_path}")
+            continue
+            
+        observer.schedule(event_handler, str(folder_path), recursive=recursive)
+        logger.info(f"Monitoring folder: {folder_path} (recursive: {recursive})")
+    
+    if not observer.emitters:
+        logger.error("No valid folders to monitor")
+        return
     
     # Start monitoring
     observer.start()

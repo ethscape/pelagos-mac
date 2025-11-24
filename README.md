@@ -43,10 +43,21 @@ ssh -i /path/to/private/key username@hostname
 
 ## Configuration
 
-Edit `config.json` to configure sources and actions:
+Edit `config.json` to configure folders, sources, and actions:
 
 ```json
 {
+    "port": 9999,
+    "folders": [
+        {
+            "path": "~/Downloads",
+            "recursive": false
+        },
+        {
+            "path": "~/Desktop/Downloads",
+            "recursive": true
+        }
+    ],
     "sources": [
         {
             "name": "mymangasite",
@@ -103,6 +114,12 @@ Edit `config.json` to configure sources and actions:
 
 ### Configuration Options
 
+#### Folders
+- **folders**: Array of folders to monitor
+  - **path**: Folder path (supports `~` for home directory)
+  - **recursive**: Whether to monitor subdirectories (default: false)
+
+#### Sources
 - **name**: Friendly name for the source
 - **url**: Base URL to match against
 - **tags**: Optional tags for organization

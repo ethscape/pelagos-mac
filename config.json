@@ -1,5 +1,11 @@
 {
     "port": 9999,
+    "folders": [
+        {
+            "path": "~/Downloads",
+            "recursive": false
+        }
+    ],
     "sources": [],
     "commonActions": [
         {
