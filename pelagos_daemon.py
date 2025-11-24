@@ -895,28 +895,99 @@ def execute_scp_action(file_path, action: Dict[str, Any]):
     """Execute SCP action to transfer file"""
     try:
         file_path = Path(file_path)
-        
+
         # Check for extension change in hook data
         hook_data = action.pop('_hook_data', {})
         new_extension = hook_data.get('new_extension')
-        
+
         # Build the filename
         if action.get('rename'):
             # For now, use the original filename (template support can be added later)
             filename = file_path.name
         else:
             filename = file_path.name
-        
+
         # Apply extension change if needed
         if new_extension:
             file_path_obj = Path(filename)
             filename = f"{file_path_obj.stem}.{new_extension}"
             logger.info(f"Changed extension from {file_path_obj.suffix} to .{new_extension}")
-        
+
         # Build SCP command
         target = action['target']
         remote_path = f"{target}/{filename}"
-        
+
+        # Handle overwrite rules
+        overwrite_rule = action.get('overwriteRule', 'rename').lower()
+
+        if overwrite_rule != 'overwrite':
+            # Check if file exists on remote server
+            exists_cmd = ['ssh']
+            if action.get('privateKey'):
+                exists_cmd.extend(['-i', action['privateKey']])
+            if action.get('username'):
+                exists_cmd.extend([f"{action['username']}@{target.split(':')[0]}"])
+            else:
+                exists_cmd.append(target.split(':')[0])
+            exists_cmd.extend(['test', '-f', f"{target.split(':')[1]}/{filename}"])
+
+            try:
+                exists_result = subprocess.run(exists_cmd, capture_output=True, text=True, timeout=10)
+                file_exists = exists_result.returncode == 0
+
+                if file_exists:
+                    # Calculate local file checksum
+                    import hashlib
+                    local_hash = hashlib.sha256()
+                    with open(file_path, 'rb') as f:
+                        for chunk in iter(lambda: f.read(4096), b""):
+                            local_hash.update(chunk)
+                    local_checksum = local_hash.hexdigest()
+
+                    # Get remote file checksum
+                    remote_hash_cmd = ['ssh']
+                    if action.get('privateKey'):
+                        remote_hash_cmd.extend(['-i', action['privateKey']])
+                    if action.get('username'):
+                        remote_hash_cmd.extend([f"{action['username']}@{target.split(':')[0]}"])
+                    else:
+                        remote_hash_cmd.append(target.split(':')[0])
+                    remote_hash_cmd.extend(['sha256sum', f"{target.split(':')[1]}/{filename}"])
+
+                    try:
+                        remote_hash_result = subprocess.run(remote_hash_cmd, capture_output=True, text=True, timeout=15)
+                        if remote_hash_result.returncode == 0:
+                            remote_checksum = remote_hash_result.stdout.split()[0]
+
+                            if local_checksum == remote_checksum:
+                                logger.info(f"Skipping transfer - files are identical: {remote_path}")
+                                return True
+                            else:
+                                logger.info(f"Files differ - local: {local_checksum[:8]}..., remote: {remote_checksum[:8]}...")
+                        else:
+                            logger.warning(f"Failed to get remote checksum: {remote_hash_result.stderr}")
+                    except Exception as e:
+                        logger.warning(f"Failed to compare checksums: {e}")
+
+                    if overwrite_rule == 'skip':
+                        logger.info(f"Skipping transfer - file already exists: {remote_path}")
+                        return True
+                    elif overwrite_rule == 'rename':
+                        # Add timestamp to filename
+                        import datetime
+                        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                        file_path_obj = Path(filename)
+                        filename = f"{file_path_obj.stem}_{timestamp}{file_path_obj.suffix}"
+                        remote_path = f"{target}/{filename}"
+                        logger.info(f"File exists, renaming to: {filename}")
+                    elif overwrite_rule == 'ask':
+                        # For automated actions, treat 'ask' as 'skip'
+                        logger.info(f"Skipping transfer - file exists and overwriteRule is 'ask': {remote_path}")
+                        return True
+            except Exception as e:
+                logger.warning(f"Failed to check if remote file exists: {e}")
+                # Continue with original filename if check fails
+
         # Use private key if specified
         scp_cmd = ['scp']
         if action.get('privateKey'):

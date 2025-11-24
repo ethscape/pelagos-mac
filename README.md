@@ -129,7 +129,12 @@ Edit `config.json` to configure folders, sources, and actions:
 - **action.privateKey**: Path to SSH private key
 - **keepOriginal**: If `false`, deletes the original file after successful transfer
 - **rename**: Template for renaming (currently uses original filename)
-- **overwriteRule**: How to handle existing files (future feature)
+- **overwriteRule**: How to handle existing files at destination (default: "rename")
+  - "overwrite": Replace existing file
+  - "rename": Add timestamp to filename (e.g., file_20251124_143022.zip)
+  - "skip": Don't transfer if file exists
+  - "ask": For automated actions, treated as "skip"
+  - **Note**: Files with identical SHA256 checksums are always skipped to save bandwidth
 - **auto**:
   - If `true`, the action executes immediately without user interaction.
   - If `false`, Pelagos shows a **banner notification** with the action details.
