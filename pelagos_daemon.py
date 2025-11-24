@@ -958,7 +958,7 @@ def execute_scp_action(file_path, action: Dict[str, Any]):
         return False
 
 
-def process_file(file_path, config: Dict[str, Any]):
+def process_file(file_path, config: Dict[str, Any], mark_processed_callback=None):
     """Process a file: check source and execute action"""
     import traceback
     try:
@@ -1065,6 +1065,10 @@ def process_file(file_path, config: Dict[str, Any]):
                 logger.warning(f"Failed to speak action name: {e}")
         
         logger.info(f"=== END PROCESSING FILE: {file_path} (SUCCESS) ===")
+        
+        # Mark file as successfully processed
+        if mark_processed_callback:
+            mark_processed_callback()
             
     except Exception as err:
         logger.error(f"Error processing file {file_path}: {err}")
@@ -1103,16 +1107,19 @@ class DownloadsHandler(FileSystemEventHandler):
             return
         
         logger.info(f"Processing new file: {file_path} (event: {event.event_type})")
-        self.processed_files.add(file_path)
         
         # Process the file in a separate thread to allow concurrent processing
         import threading
-        thread = threading.Thread(target=process_file, args=(file_path, self.config), daemon=True)
+        thread = threading.Thread(target=process_file, args=(file_path, self.config, lambda: self._mark_processed(file_path)), daemon=True)
         thread.start()
         
         # Clean up processed files set to avoid memory leak
         if len(self.processed_files) > 1000:
             self.processed_files.clear()
+    
+    def _mark_processed(self, file_path):
+        """Mark a file as processed after successful handling"""
+        self.processed_files.add(file_path)
 
 
 def check_single_instance():

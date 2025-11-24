@@ -42,13 +42,16 @@ def send_to_server(message, port=None):
         sock.send(message.encode('utf-8'))
         
         # Wait for acknowledgment
-        ack = sock.recv(1024).decode('utf-8')
+        ack = sock.recv(1024).decode('utf-8').strip()
         sock.close()
         
         if ack == "ACK":
             return True
+        elif ack == "":
+            print("No acknowledgment received (connection closed)", file=sys.stderr)
+            return False
         else:
-            print(f"Unexpected acknowledgment: {ack}", file=sys.stderr)
+            print(f"Unexpected acknowledgment: '{ack}'", file=sys.stderr)
             return False
     except Exception as e:
         print(f"Error sending to server: {e}", file=sys.stderr)
