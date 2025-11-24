@@ -26,6 +26,14 @@
                 {
                     "type": "hook",
                     "name": "getFeaturedImage"
+                },
+                {
+                    "type": "hook",
+                    "name": "changeExtension",
+                    "extensions": {
+                        "zip": "cbz",
+                        "rar": "cbr"
+                    }
                 }
             ]
         },

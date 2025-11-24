@@ -4,7 +4,6 @@ Banner notification using alerter
 """
 import sys
 import os
-import time
 import subprocess
 import socket
 import json

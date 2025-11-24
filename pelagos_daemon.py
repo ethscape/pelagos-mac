@@ -570,6 +570,7 @@ def prompt_user_for_common_action(file_path: Path, config: Dict[str, Any], defau
                 logger.info(f"User executed action via alerter for {file_path.name}")
                 action = copy.deepcopy(single_action)
                 action['_manual_selection'] = True  # Mark as manually confirmed
+                action['_hook_data'] = hook_data  # Preserve hook data
                 return action
             else:
                 # Wait for response (only EXECUTE will trigger response)
@@ -586,6 +587,7 @@ def prompt_user_for_common_action(file_path: Path, config: Dict[str, Any], defau
                     if command == "EXECUTE":
                         action = copy.deepcopy(single_action)
                         action['_manual_selection'] = True  # Mark as manually confirmed
+                        action['_hook_data'] = hook_data  # Preserve hook data
                         return action
                 else:
                     # No response - user closed notification
@@ -807,6 +809,8 @@ end if'''
                         selected_action = action_name_map[selected_action_name]
                         logger.info(f"Single action '{selected_action_name}' executed via EXECUTE")
                         selected_action['_manual_selection'] = True
+                        # Preserve hook_data from first matching action
+                        selected_action['_hook_data'] = first_hook_data
                         return copy.deepcopy(selected_action)
                     
                     # Otherwise show dialog with action options (backward compatibility)
@@ -853,6 +857,8 @@ end if'''
                         selected_action = copy.deepcopy(selected_action)
                         selected_action['_confirmed'] = True  # Mark as already confirmed
                         selected_action['_manual_selection'] = True  # Mark as manually confirmed
+                        # Preserve hook_data from first matching action
+                        selected_action['_hook_data'] = first_hook_data
                         return selected_action
                         
                     except FileNotFoundError:
@@ -875,12 +881,22 @@ def execute_scp_action(file_path, action: Dict[str, Any]):
     try:
         file_path = Path(file_path)
         
+        # Check for extension change in hook data
+        hook_data = action.pop('_hook_data', {})
+        new_extension = hook_data.get('new_extension')
+        
         # Build the filename
         if action.get('rename'):
             # For now, use the original filename (template support can be added later)
             filename = file_path.name
         else:
             filename = file_path.name
+        
+        # Apply extension change if needed
+        if new_extension:
+            file_path_obj = Path(filename)
+            filename = f"{file_path_obj.stem}.{new_extension}"
+            logger.info(f"Changed extension from {file_path_obj.suffix} to .{new_extension}")
         
         # Build SCP command
         target = action['target']
