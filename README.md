@@ -1,6 +1,6 @@
 # Pelagos
 
-A macOS daemon that monitors your Downloads folder and automatically transfers files to remote servers based on their source URL.
+A macOS daemon that monitors your Downloads folder and automatically transfers files to remote servers based on their source URL or other criteria.
 
 ## Features
 
