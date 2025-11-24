@@ -362,15 +362,18 @@ def _try_banner_notification(file_path: Path, action: Dict[str, Any], action_typ
     subtitle = f"Confirm {action.get('display_name', action['name'])}"
     message = f"File: {file_path.name}"
     
-    # Launch pync banner notification with action hash
-    logger.info(f"Launching pync banner notification (Python wrapper)")
+    # Launch alerter banner notification with action hash
+    logger.info(f"Launching alerter banner notification (Python wrapper)")
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    pync_banner = os.path.join(script_dir, 'pync_banner.py')
+    alerter_banner = os.path.join(script_dir, 'alerter_banner.py')
     
-    # Build command with optional content image
-    cmd = [pync_banner, title, subtitle, message, action_hash]
+    # Build command with optional content image and available actions
+    cmd = [alerter_banner, title, subtitle, message, action_hash]
     if hook_data.get('contentImage'):
         cmd.extend(['--content-image', hook_data['contentImage']])
+    if available_actions:
+        import json
+        cmd.extend(['--available-actions', json.dumps(available_actions)])
     
     process = subprocess.Popen(
         cmd,
@@ -383,8 +386,50 @@ def _try_banner_notification(file_path: Path, action: Dict[str, Any], action_typ
     time.sleep(1.0)
     logger.info("Notification client launched successfully")
     
-    # Return the action hash - response will be handled asynchronously
-    return action_hash
+    # Wait for process to complete (alerter is synchronous, unlike pync)
+    stdout, stderr = process.communicate()
+    
+    if process.returncode == 0:
+        # Check what alerter actually returned
+        logger.info(f"Alerter stdout: {stdout}")
+        logger.info(f"Alerter stderr: {stderr}")
+        
+        # Check if alerter returned None (user clicked body or failed)
+        if "No action selected or fallback to dialog" in stdout:
+            logger.info("Alerter fallback to dialog - showing AppleScript dialog")
+            # For multiple actions, return None so the daemon can show the action selection dialog
+            if action_type == 'multiple':
+                return None
+            # For single actions, user closed/ignored notification - respect that and skip
+            logger.info(f"User closed/ignored single-action notification for {file_path.name}")
+            return None
+        else:
+            # Check if alerter returned an action hash (for single actions)
+            # The last line of stdout should be the action hash if alerter handled it
+            lines = stdout.strip().split('\n')
+            if lines:
+                # Look for a 16-char hex string at the end (the action hash)
+                for line in reversed(lines):
+                    line = line.strip()
+                    # Check if line is exactly a 16-char hex string
+                    if line and len(line) == 16 and all(c in '0123456789abcdef' for c in line.lower()):
+                        logger.info(f"Alerter returned action hash: {line}")
+                        return line
+                    # Check if line contains a 16-char hex string (e.g., "Action executed: hash")
+                    import re
+                    match = re.search(r'\b([0-9a-f]{16})\b', line.lower())
+                    if match:
+                        hash_str = match.group(1)
+                        logger.info(f"Alerter returned action hash: {hash_str}")
+                        return hash_str
+            
+            # Otherwise, alerter handled the interaction via the notification server
+            logger.info("Alerter completed successfully - action already executed via server")
+            return None
+    else:
+        # Alerter failed, fall back to dialog
+        logger.info(f"Alerter failed (return code: {process.returncode}), falling back to dialog")
+        return _confirm_via_dialog(file_path, action.get('display_name', action['name']), message)
 
 
 def _confirm_via_dialog(file_path: Path, action_name: str, message: str) -> Tuple[bool, str]:
@@ -498,33 +543,59 @@ def prompt_user_for_common_action(file_path: Path, config: Dict[str, Any], defau
         )
         
         # Use banner notification with action registry
-        action_hash = _try_banner_notification(file_path, single_action, 'single', hook_data=hook_data)
-        if action_hash:
-            # Wait for response (only EXECUTE will trigger response)
-            response = notification_server.wait_for_response(timeout=30)
-            
-            if response:
-                # User clicked EXECUTE
-                parts = response.split(':', 1)
-                command = parts[0]
-                resp_hash = parts[1] if len(parts) > 1 else None
-                
-                # Registry already cleaned up by server when EXECUTE was received
-                
-                if command == "EXECUTE":
-                    action = copy.deepcopy(single_action)
-                    action['_manual_selection'] = True  # Mark as manually confirmed
-                    return action
+        # Pass the single action as available_actions for proper handling
+        action_hash = _try_banner_notification(file_path, single_action, 'single', 
+                                              available_actions=[single_action], 
+                                              hook_data=hook_data)
+        if action_hash is None:
+            # User closed/ignored notification - fall through to show all matching actions
+            # Get ALL actions that match the file extension (not just filtered ones)
+            file_ext = file_path.suffix.lstrip('.').lower()
+            all_matching_actions = [a for a in actions if file_ext in [ext.lower() for ext in a.get('extensions', [])]]
+            if len(all_matching_actions) > 1:
+                # Show all matching actions in dialog
+                logger.info(f"User closed single-action notification - showing all {len(all_matching_actions)} matching actions")
+                # Update filtered_actions to include all matching actions
+                filtered_actions = all_matching_actions
+                # Continue to multiple actions section below
             else:
-                # Timeout - user didn't click
-                # Clean up registry
-                action_reg = get_registry()
-                action_reg.remove_action(action_hash)
-                
+                # Only one action total, user closed it - skip
+                logger.info(f"User closed single-action notification for {file_path.name}")
                 return {'_user_skipped': True}
-        
-        # Fallback: return action without confirmation
-        return copy.deepcopy(single_action)
+        elif action_hash:
+            # If action_hash is returned, it means alerter already handled the user interaction
+            # and the user clicked Execute. The action should be executed immediately.
+            if isinstance(action_hash, str) and len(action_hash) == 16:
+                # alerter_banner.py returned the action hash, meaning user clicked Execute
+                logger.info(f"User executed action via alerter for {file_path.name}")
+                action = copy.deepcopy(single_action)
+                action['_manual_selection'] = True  # Mark as manually confirmed
+                return action
+            else:
+                # Wait for response (only EXECUTE will trigger response)
+                response = notification_server.wait_for_response(timeout=None)
+                
+                if response:
+                    # User clicked EXECUTE
+                    parts = response.split(':', 1)
+                    command = parts[0]
+                    resp_hash = parts[1] if len(parts) > 1 else None
+                    
+                    # Registry already cleaned up by server when EXECUTE was received
+                    
+                    if command == "EXECUTE":
+                        action = copy.deepcopy(single_action)
+                        action['_manual_selection'] = True  # Mark as manually confirmed
+                        return action
+                else:
+                    # No response - user closed notification
+                    # Clean up registry
+                    action_reg = get_registry()
+                    action_reg.remove_action(action_hash)
+                    
+                    # User ignored notification - skip
+                    logger.info(f"User ignored banner notification for {file_path.name}")
+                    return {'_user_skipped': True}
 
     # Multiple actions: show banner notification first, then dialog if clicked
     action_name_map = {action.get('name'): action for action in filtered_actions if action.get('name')}
@@ -545,91 +616,257 @@ def prompt_user_for_common_action(file_path: Path, config: Dict[str, Any], defau
     # For multiple actions, use hook_data from first matching action
     first_hook_data = filtered_actions_with_data[0][1] if filtered_actions_with_data else {}
     action_hash = _try_banner_notification(file_path, banner_action, 'multiple', available_actions=filtered_actions, hook_data=first_hook_data)
-    if action_hash:
-        # Wait for response (only EXECUTE will trigger response)
-        response = notification_server.wait_for_response(timeout=30)
+    if action_hash is None:
+        # User clicked alert body or alerter failed - show action selection dialog
+        logger.info(f"User clicked alert body for {file_path.name} - showing action selection dialog")
+        # Create AppleScript list items
+        action_names = list(action_name_map.keys())
+        prompt_text = _escape_applescript_string(f"Pelagos detected {file_path.name}. Choose a common action or Skip.")
         
-        logger.info(f"Banner response received: {response}")
-        if response:  # User clicked EXECUTE
-            parts = response.split(':', 1)
-            command = parts[0]
-            resp_hash = parts[1] if len(parts) > 1 else None
-            # Show dialog with action options
-            action_list_str = ", ".join(f'"{_escape_applescript_string(name)}"' for name in action_name_map.keys())
-            prompt_text = _escape_applescript_string(f"Pelagos detected '{file_path.name}'. Choose a common action or Skip.")
-
-            script_lines = [
-                f'set actionList to {{{action_list_str}}}',
-                f'set promptText to "{prompt_text}"'
-            ]
-
-            default_action_name = default_action_name if default_action_name in action_name_map else None
-            if default_action_name:
-                escaped_default = _escape_applescript_string(default_action_name)
-                script_lines.append(f'set defaultAction to "{escaped_default}"')
-                script_lines.append('set chosenAction to choose from list actionList with prompt promptText default items {defaultAction} OK button name "Apply" cancel button name "Skip"')
-            else:
-                script_lines.append('set chosenAction to choose from list actionList with prompt promptText OK button name "Apply" cancel button name "Skip"')
-
-            script_lines.extend([
-                'if chosenAction is false then',
-                '    return "SKIP"',
-                'else',
-                '    return item 1 of chosenAction',
-                'end if'
-            ])
-
-            script = "\n".join(script_lines)
-
-            try:
-                result = subprocess.run(
-                    ['osascript'],
-                    input=script,
-                    capture_output=True,
-                    text=True,
-                    timeout=120
-                )
-                
-                if result.returncode != 0:
-                    logger.error(f"osascript returned error: {result.stderr.strip()}")
-                    return None
-
-                selection = result.stdout.strip()
-                
-                # Registry already cleaned up by server when EXECUTE was received
-                
-                if not selection or selection == 'SKIP' or selection.lower() == 'false':
-                    logger.info(f"User skipped common action for {file_path.name}")
-                    return {'_user_skipped': True}  # Special marker for intentional skip
-
-                selected_action = action_name_map.get(selection)
-                if not selected_action:
-                    logger.warning(f"User selected unknown common action '{selection}'")
-                    return None
-
+        # Use the exact same pattern as the working code
+        action_list_str = ", ".join(f'"{_escape_applescript_string(name)}"' for name in action_name_map.keys())
+        
+        # Use choose from list for all actions
+        action_list = list(action_name_map.keys())
+        
+        # Build the action list for AppleScript
+        action_items = ", ".join([f'"{_escape_applescript_string(name)}"' for name in action_list])
+        
+        script = f'''set actionList to {{{action_items}}}
+set userSelection to choose from list actionList with prompt "{prompt_text}" default items (item 1 of actionList)
+if userSelection is false then
+    return "Skip"
+else
+    return item 1 of userSelection as text
+end if'''
+        
+        logger.info(f"AppleScript to execute: {script}")
+        
+        try:
+            logger.info(f"Executing AppleScript...")
+            # Use -e flag to pass script directly
+            result = subprocess.run(
+                ['osascript', '-e', script],
+                capture_output=True,
+                text=True
+            )
+            
+            logger.info(f"osascript return code: {result.returncode}")
+            logger.info(f"osascript stdout: {result.stdout.strip()}")
+            logger.info(f"osascript stderr: {result.stderr.strip()}")
+            
+            if result.returncode != 0:
+                logger.error(f"osascript returned error: {result.stderr.strip()}")
+                return None
+            
+            selection = result.stdout.strip()
+            
+            if selection == 'Skip' or not selection:
+                logger.info(f"User skipped common action for {file_path.name}")
+                return {'_user_skipped': True}
+            
+            # Find the action by name
+            if selection in action_name_map:
+                selected_action = action_name_map[selection]
                 logger.info(f"User selected common action '{selection}' for {file_path.name}")
-                selected_action = copy.deepcopy(selected_action)
-                selected_action['_confirmed'] = True  # Mark as already confirmed
-                selected_action['_manual_selection'] = True  # Mark as manually confirmed
-                return selected_action
+                # Return a copy with manual_selection flag
+                action_copy = copy.deepcopy(selected_action)
+                action_copy['_manual_selection'] = True
+                return action_copy
+            else:
+                logger.error(f"Selected action '{selection}' not found in action map")
+                return None
+        except FileNotFoundError:
+            logger.error("osascript not found; cannot prompt for common action")
+            return None
+        except subprocess.TimeoutExpired:
+            logger.warning(f"Timed out waiting for user selection for {file_path}")
+            return None
+        except Exception as e:
+            logger.error(f"Failed to prompt for common action: {e}")
+            return None
+    
+    if action_hash:
+        # If action_hash is returned as a string (16 chars), it means alerter already handled the interaction
+        # We need to wait for the response that the server has already received
+        if isinstance(action_hash, str) and len(action_hash) == 16:
+            # Check if there's already a response (server might have already received it from alerter)
+            # Don't clear the response - check if it's already set
+            if notification_server.response_event.is_set():
+                # Response is already available
+                response = notification_server.current_response
+                logger.info(f"Banner response already available: {response}")
+                # Clear it after reading
+                notification_server.current_response = None
+                notification_server.response_event.clear()
+            else:
+                # Wait for response (in case it hasn't been received yet)
+                response = notification_server._wait_for_response_no_clear(timeout=5)
+                logger.info(f"Banner response received: {response}")
+            if response:  # User responded to banner
+                parts = response.split(':', 2)
+                command = parts[0]
                 
-            except FileNotFoundError:
-                logger.error("osascript not found; cannot prompt for common action")
-                return None
-            except subprocess.TimeoutExpired:
-                logger.warning(f"Timed out waiting for user selection for {file_path}")
-                return None
-            except Exception as e:
-                logger.error(f"Failed to prompt for common action: {e}")
-                return None
+                if command == 'ACTION' and len(parts) >= 3:
+                    # User selected action from alerter dropdown
+                    selected_action_name = parts[1]
+                    resp_hash = parts[2] if len(parts) > 2 else None
+                    
+                    # Find the selected action
+                    selected_action = action_name_map.get(selected_action_name)
+                    if selected_action:
+                        logger.info(f"User selected action '{selected_action_name}' from alerter")
+                        selected_action['_manual_selection'] = True
+                        return copy.deepcopy(selected_action)
+                    else:
+                        logger.warning(f"User selected unknown common action '{selected_action_name}'")
+                        return None
+                elif command == 'EXECUTE':
+                    # User clicked Execute button - show dialog for action selection
+                    logger.info("User clicked Execute for multiple actions - showing dialog")
+                    action_list_str = ", ".join(f'"{_escape_applescript_string(name)}"' for name in action_name_map.keys())
+                    prompt_text = _escape_applescript_string(f"Pelagos detected '{file_path.name}'. Choose a common action or Skip.")
+                    
+                    script_lines = [
+                        f'set actionList to {{{action_list_str}}}',
+                        f'set promptText to "{prompt_text}"',
+                        'set selection to choose from list actionList with prompt promptText default items {item 1 of actionList}',
+                        'if selection is false then return "SKIP"',
+                        'return item 1 of selection'
+                    ]
+                    script = 'osascript -e "' + '" -e "'.join(script_lines) + '"'
+                    
+                    try:
+                        result = subprocess.run(
+                            script,
+                            shell=True,
+                            capture_output=True,
+                            text=True,
+                            timeout=120
+                        )
+                        
+                        if result.returncode != 0:
+                            logger.error(f"osascript returned error: {result.stderr.strip()}")
+                            return None
+                        
+                        selection = result.stdout.strip()
+                        
+                        if not selection or selection == 'SKIP' or selection.lower() == 'false':
+                            logger.info(f"User skipped common action for {file_path.name}")
+                            return {'_user_skipped': True}
+                        
+                        selected_action = action_name_map.get(selection)
+                        if not selected_action:
+                            logger.warning(f"User selected unknown common action '{selection}'")
+                            return None
+                        
+                        logger.info(f"User selected common action '{selection}' for {file_path.name}")
+                        selected_action = copy.deepcopy(selected_action)
+                        selected_action['_manual_selection'] = True
+                        return selected_action
+                        
+                    except FileNotFoundError:
+                        logger.error("osascript not found - cannot show dialog")
+                        return None
+                    except subprocess.TimeoutExpired:
+                        logger.warning(f"User confirmation timed out for {file_path.name}")
+                        return None
+                    except Exception as e:
+                        logger.error(f"Error showing action selection dialog: {e}")
+                        return None
         else:
-            # User skipped the banner notification (timeout)
-            logger.info(f"User skipped banner notification for {file_path.name}")
+            # Wait for response (only EXECUTE will trigger response)
+            response = notification_server.wait_for_response(timeout=30)
             
-            # Clean up registry
-            action_reg = get_registry()
-            action_reg.remove_action(action_hash)
+            logger.info(f"Banner response received: {response}")
+            if response:  # User responded to banner
+                parts = response.split(':', 2)
+                command = parts[0]
+                
+                if command == 'ACTION' and len(parts) >= 3:
+                    # User selected action from alerter dropdown
+                    selected_action_name = parts[1]
+                    resp_hash = parts[2] if len(parts) > 2 else None
+                    
+                    # Find the selected action
+                    selected_action = action_name_map.get(selected_action_name)
+                    if selected_action:
+                        logger.info(f"User selected action '{selected_action_name}' from alerter")
+                        selected_action['_manual_selection'] = True
+                        return copy.deepcopy(selected_action)
+                    else:
+                        logger.warning(f"User selected unknown common action '{selected_action_name}'")
+                        return None
+                elif command == 'EXECUTE':
+                    # User clicked EXECUTE
+                    resp_hash = parts[1] if len(parts) > 1 else None
+                    
+                    # If there's only one action, execute it directly
+                    if len(action_name_map) == 1:
+                        selected_action_name = list(action_name_map.keys())[0]
+                        selected_action = action_name_map[selected_action_name]
+                        logger.info(f"Single action '{selected_action_name}' executed via EXECUTE")
+                        selected_action['_manual_selection'] = True
+                        return copy.deepcopy(selected_action)
+                    
+                    # Otherwise show dialog with action options (backward compatibility)
+                    action_list_str = ", ".join(f'"{_escape_applescript_string(name)}"' for name in action_name_map.keys())
+                    prompt_text = _escape_applescript_string(f"Pelagos detected '{file_path.name}'. Choose a common action or Skip.")
+
+                    script_lines = [
+                        f'set actionList to {{{action_list_str}}}',
+                        f'set promptText to "{prompt_text}"',
+                        'set selection to choose from list actionList with prompt promptText default items {item 1 of actionList}',
+                        'if selection is false then return "SKIP"',
+                        'return item 1 of selection'
+                    ]
+                    
+                    script = "\n".join(script_lines)
+
+                    try:
+                        result = subprocess.run(
+                            ['osascript'],
+                            input=script,
+                            capture_output=True,
+                            text=True,
+                            timeout=120
+                        )
+                        
+                        if result.returncode != 0:
+                            logger.error(f"osascript returned error: {result.stderr.strip()}")
+                            return None
+
+                        selection = result.stdout.strip()
+                        
+                        # Registry already cleaned up by server when EXECUTE was received
+                        
+                        if not selection or selection == 'SKIP' or selection.lower() == 'false':
+                            logger.info(f"User skipped common action for {file_path.name}")
+                            return {'_user_skipped': True}  # Special marker for intentional skip
+
+                        selected_action = action_name_map.get(selection)
+                        if not selected_action:
+                            logger.warning(f"User selected unknown common action '{selection}'")
+                            return None
+
+                        logger.info(f"User selected common action '{selection}' for {file_path.name}")
+                        selected_action = copy.deepcopy(selected_action)
+                        selected_action['_confirmed'] = True  # Mark as already confirmed
+                        selected_action['_manual_selection'] = True  # Mark as manually confirmed
+                        return selected_action
+                        
+                    except FileNotFoundError:
+                        logger.error("osascript not found; cannot prompt for common action")
+                        return None
+                    except subprocess.TimeoutExpired:
+                        logger.warning(f"Timed out waiting for user selection for {file_path}")
+                        return None
+                    except Exception as e:
+                        logger.error(f"Failed to prompt for common action: {e}")
+                        return None
             
+            # If we get here, there was no response or it was invalid
+            logger.info(f"User ignored banner notification for {file_path.name}")
             return {'_user_skipped': True}  # Special marker for intentional skip
 
 
@@ -739,6 +976,17 @@ def process_file(file_path, config: Dict[str, Any]):
                 logger.debug(f"No source matched for {file_path}. Prompting user for common action selection.")
                 action = prompt_user_for_common_action(path_obj, config, default_action_name=default_name, has_source=has_source)
                 if not action:
+                    # Action was already executed via alerter banner notification
+                    logger.info(f"Action already executed via alerter for {path_obj.name}")
+                    return
+                elif action == "MANUAL_EXECUTE":
+                    # This shouldn't happen anymore, but keep for backward compatibility
+                    logger.info(f"Received MANUAL_EXECUTE marker - using default action '{default_name}' for {path_obj.name} (executed via alerter)")
+                    action = copy.deepcopy(default_common)
+                    action['_manual_selection'] = True
+                    if hook_data:
+                        action['_hook_data'] = hook_data
+                elif isinstance(action, dict) and action.get('_user_skipped'):
                     if default_common and not config.get('commonActionsPromptRequired'):
                         # If prompt failed (e.g., headless), fall back to default match
                         logger.info(f"Falling back to default common action '{default_name}' for {path_obj.name}")
@@ -754,11 +1002,12 @@ def process_file(file_path, config: Dict[str, Any]):
                 logger.debug(f"No matching source and no common actions defined for {file_path}")
                 return
 
-        manual_selection = bool(action.pop('_manual_selection', False)) if action else False
-
         if not action:
-            logger.warning(f"No executable action found for file {file_path}")
+            # Action was already executed via alerter banner notification
+            logger.info(f"Action already executed via alerter for {path_obj.name}")
             return
+
+        manual_selection = bool(action.pop('_manual_selection', False))
 
         logger.info(f"Action: {action}, manual_selection: {manual_selection}, is_auto: {is_action_auto(action) if action else 'N/A'}")
 
@@ -779,7 +1028,7 @@ def process_file(file_path, config: Dict[str, Any]):
             action_name = action.get('name', 'Unknown')
             logger.info(f"Dummy action '{action_name}' executed for {path_obj.name}")
             try:
-                subprocess.run(['say', f"Executed {action_name} action"], check=True, capture_output=True)
+                subprocess.run(['say', f"Executed {action_name} action for {path_obj.name}"], check=True, capture_output=True)
                 logger.info(f"Spoke action name: {action_name}")
             except Exception as e:
                 logger.warning(f"Failed to speak action name: {e}")
@@ -825,8 +1074,10 @@ class DownloadsHandler(FileSystemEventHandler):
         logger.info(f"Processing new file: {file_path} (event: {event.event_type})")
         self.processed_files.add(file_path)
         
-        # Process the file
-        process_file(file_path, self.config)
+        # Process the file in a separate thread to allow concurrent processing
+        import threading
+        thread = threading.Thread(target=process_file, args=(file_path, self.config), daemon=True)
+        thread.start()
         
         # Clean up processed files set to avoid memory leak
         if len(self.processed_files) > 1000:
@@ -837,6 +1088,7 @@ def check_single_instance():
     """Ensure only one daemon instance is running"""
     import psutil
     import sys
+    import copy
     
     current_pid = os.getpid()
     current_script = os.path.abspath(__file__)

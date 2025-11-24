@@ -13,6 +13,10 @@ class NotificationServer:
         
     def start(self):
         """Start the notification server"""
+        # Don't start if already running
+        if self.running:
+            return None
+            
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server_socket.bind(('localhost', self.port))
@@ -88,6 +92,28 @@ class NotificationServer:
                     else:
                         logging.info(f"User response received: EXECUTE")
                     break
+                elif command == "ACTION":
+                    # User selected action from dropdown - store full message
+                    self.current_response = data  # Store full "ACTION:action_name:hash" format
+                    self.response_event.set()
+                    if action_hash:
+                        # For ACTION, action_hash contains "action_name:hash"
+                        parts = action_hash.split(':', 1)
+                        if len(parts) == 2:
+                            selected_action_name = parts[0]
+                            actual_hash = parts[1]
+                            logging.info(f"User selected action '{selected_action_name}' for action {actual_hash}")
+                            # Remove action from registry
+                            try:
+                                from action_registry import get_registry
+                                registry = get_registry()
+                                registry.remove_action(actual_hash)
+                                logging.info(f"Removed action {actual_hash} from registry after ACTION")
+                            except Exception as e:
+                                logging.warning(f"Failed to remove action {actual_hash} from registry: {e}")
+                    else:
+                        logging.info(f"User response received: ACTION")
+                    break
                 elif command == "SKIP":
                     # Skip is just cleanup - don't set response event
                     if action_hash:
@@ -120,6 +146,16 @@ class NotificationServer:
         if self.response_event.wait(timeout):
             response = self.current_response
             self.current_response = None
+            return response
+        else:
+            return None
+    
+    def _wait_for_response_no_clear(self, timeout=30):
+        """Wait for user response without clearing first"""
+        if self.response_event.wait(timeout):
+            response = self.current_response
+            self.current_response = None
+            self.response_event.clear()
             return response
         else:
             return None

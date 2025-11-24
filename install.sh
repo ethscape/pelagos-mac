@@ -34,10 +34,36 @@ echo ""
 echo "📦 Installing Python dependencies..."
 "$VENV_DIR/bin/pip" install -r "$SCRIPT_DIR/requirements.txt"
 
-# Banner notification system uses terminal-notifier (no Xcode build needed)
+# Install alerter for banner notifications
 echo ""
-echo "🔔 Banner notification system uses terminal-notifier"
-echo "   ✓ No additional build steps required"
+echo "🔔 Installing alerter for banner notifications..."
+ALERTER_DIR="$HOME/.local/bin"
+mkdir -p "$ALERTER_DIR"
+
+# Check if alerter is already installed
+if [ ! -f "$ALERTER_DIR/alerter" ]; then
+    echo "📥 Downloading alerter..."
+    cd /tmp
+    # Get the latest release download URL (alerter only provides amd64 builds for macOS)
+    RELEASE_URL=$(curl -s https://api.github.com/repos/vjeantet/alerter/releases/latest | grep "browser_download_url.*darwin_amd64" | cut -d '"' -f 4)
+    if [ -z "$RELEASE_URL" ]; then
+        echo "❌ Could not find alerter release for macOS"
+        exit 1
+    fi
+    curl -L -o alerter.gz "$RELEASE_URL"
+    gunzip -c alerter.gz > "$ALERTER_DIR/alerter"
+    chmod +x "$ALERTER_DIR/alerter"
+    rm alerter.gz
+    echo "✓ Alerter installed to $ALERTER_DIR/alerter"
+else
+    echo "✓ Alerter already installed"
+fi
+
+# Add ~/.local/bin to PATH if not already there
+if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
+    echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zshrc"
+    echo "✓ Added ~/.local/bin to PATH in .zshrc"
+fi
 
 # Make the daemon script executable
 echo ""
